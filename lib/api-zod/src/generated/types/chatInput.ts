@@ -9,4 +9,5 @@ import type { ChatMessage } from './chatMessage';
 
 export interface ChatInput {
   messages: ChatMessage[];
+  conversationId?: string | null;
 }

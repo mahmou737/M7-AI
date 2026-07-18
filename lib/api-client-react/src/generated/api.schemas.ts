@@ -24,6 +24,7 @@ export interface ChatMessage {
 
 export interface ChatInput {
   messages: ChatMessage[];
+  conversationId?: string | null;
 }
 
 export interface ChatResponse {
@@ -33,5 +34,36 @@ export interface ChatResponse {
 
 export interface ErrorResponse {
   error: string;
+}
+
+export interface SuccessResponse {
+  success: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type StoredMessageRole = typeof StoredMessageRole[keyof typeof StoredMessageRole];
+
+
+export const StoredMessageRole = {
+  user: 'user',
+  assistant: 'assistant',
+} as const;
+
+export interface StoredMessage {
+  id: number;
+  conversationId: string;
+  role: StoredMessageRole;
+  content: string;
+  createdAt: string;
+}
+
+export interface UpdateConversationInput {
+  title: string;
 }
 

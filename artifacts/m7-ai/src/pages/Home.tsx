@@ -1,9 +1,21 @@
-import { Link } from "wouter";
+import { useLocation } from "wouter";
 import { buttonVariants } from "@/components/ui/button";
-import { Sparkles, Zap, Shield, Globe } from "lucide-react";
+import { Sparkles, Zap, Shield, Globe, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCreateConversation } from "@workspace/api-client-react";
 
 export default function Home() {
+  const [, navigate] = useLocation();
+  const createConversation = useCreateConversation();
+
+  const handleStart = () => {
+    createConversation.mutate(undefined, {
+      onSuccess: (conv) => {
+        navigate(`/chat/${conv.id}`);
+      },
+    });
+  };
+
   return (
     <div className="min-h-[100dvh] w-full flex flex-col items-center justify-center relative overflow-hidden">
       {/* Background Ambience */}
@@ -13,7 +25,7 @@ export default function Home() {
       </div>
 
       <div className="container px-4 md:px-6 flex flex-col items-center text-center z-10 max-w-4xl mx-auto space-y-16">
-        
+
         {/* Hero Section */}
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-1000">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full glass border-primary/20 text-primary text-sm font-medium mb-4">
@@ -34,17 +46,17 @@ export default function Home() {
 
         {/* Features Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full animate-in fade-in slide-in-from-bottom-12 duration-1000 delay-200 fill-mode-both">
-          <FeatureCard 
+          <FeatureCard
             icon={<Zap className="w-6 h-6 text-primary" />}
             title="سرعة فائقة"
             description="إجابات فورية ودقيقة في أجزاء من الثانية."
           />
-          <FeatureCard 
+          <FeatureCard
             icon={<Shield className="w-6 h-6 text-primary" />}
             title="خصوصية تامة"
             description="بياناتك مشفرة ومحمية بأعلى معايير الأمان."
           />
-          <FeatureCard 
+          <FeatureCard
             icon={<Globe className="w-6 h-6 text-primary" />}
             title="فهم عميق"
             description="مصمم خصيصاً للتفاعل اللغوي الطبيعي والسلس."
@@ -53,10 +65,18 @@ export default function Home() {
 
         {/* CTA */}
         <div className="animate-in fade-in slide-in-from-bottom-12 duration-1000 delay-500 fill-mode-both">
-          <Link href="/chat" className={cn(buttonVariants({ size: "lg" }), "rounded-full px-12 group gap-2")}>
-            <Sparkles className="w-5 h-5 group-hover:animate-pulse" />
+          <button
+            onClick={handleStart}
+            disabled={createConversation.isPending}
+            className={cn(buttonVariants({ size: "lg" }), "rounded-full px-12 group gap-2")}
+          >
+            {createConversation.isPending ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Sparkles className="w-5 h-5 group-hover:animate-pulse" />
+            )}
             ابدأ المحادثة
-          </Link>
+          </button>
         </div>
 
       </div>
@@ -64,7 +84,7 @@ export default function Home() {
   );
 }
 
-function FeatureCard({ icon, title, description }: { icon: React.ReactNode, title: string, description: string }) {
+function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
     <div className="glass p-8 rounded-2xl flex flex-col items-center text-center space-y-4 hover:border-primary/30 transition-colors group">
       <div className="p-3 bg-primary/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
@@ -73,5 +93,5 @@ function FeatureCard({ icon, title, description }: { icon: React.ReactNode, titl
       <h3 className="text-xl font-bold">{title}</h3>
       <p className="text-muted-foreground text-sm leading-relaxed">{description}</p>
     </div>
-  )
+  );
 }

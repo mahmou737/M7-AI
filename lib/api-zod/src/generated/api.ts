@@ -24,12 +24,84 @@ export const SendMessageBody = zod.object({
   "messages": zod.array(zod.object({
   "role": zod.enum(['user', 'assistant']),
   "content": zod.string()
-}))
+})),
+  "conversationId": zod.string().nullish()
 })
 
 export const SendMessageResponse = zod.object({
   "message": zod.string(),
   "role": zod.string()
 })
+
+
+/**
+ * @summary List all conversations
+ */
+export const ListConversationsResponseItem = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+export const ListConversationsResponse = zod.array(ListConversationsResponseItem)
+
+
+/**
+ * @summary Create a new conversation
+ */
+export const CreateConversationResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Delete a conversation and all its messages
+ */
+export const DeleteConversationParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const DeleteConversationResponse = zod.object({
+  "success": zod.boolean()
+})
+
+
+/**
+ * @summary Update conversation title
+ */
+export const UpdateConversationParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const UpdateConversationBody = zod.object({
+  "title": zod.string()
+})
+
+export const UpdateConversationResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Get all messages for a conversation
+ */
+export const GetConversationMessagesParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const GetConversationMessagesResponseItem = zod.object({
+  "id": zod.number(),
+  "conversationId": zod.string(),
+  "role": zod.enum(['user', 'assistant']),
+  "content": zod.string(),
+  "createdAt": zod.coerce.date()
+})
+export const GetConversationMessagesResponse = zod.array(GetConversationMessagesResponseItem)
 
 
