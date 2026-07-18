@@ -3,11 +3,13 @@ import { SendMessageBody } from "@workspace/api-zod";
 
 const router = Router();
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
+
 const SYSTEM_PROMPT =
   "أنت M7 AI، مساعد ذكاء اصطناعي متقدم يتحدث العربية بطلاقة. " +
   "تجيب بأسلوب واضح ومفيد وودي. استخدم العربية الفصحى البسيطة. " +
-  "عند الحاجة للتعداد أو الخطوات، نظّمها بشكل جميل ومرتب.";
+  "عند الحاجة للتعداد أو الخطوات، نظّمها بشكل جميل ومرتب. " +
+  "لا تستخدم الإيموجي في ردودك.";
 
 router.post("/", async (req, res) => {
   const parsed = SendMessageBody.safeParse(req.body);
@@ -16,42 +18,35 @@ router.post("/", async (req, res) => {
     return;
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: "مفتاح API غير مضبوط" });
-    return;
-  }
-
   const { messages } = parsed.data;
 
   try {
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch(POLLINATIONS_URL, {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 8192,
-        system: SYSTEM_PROMPT,
-        messages,
+        model: "openai",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...messages,
+        ],
+        seed: 42,
+        private: true,
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      req.log.error({ status: response.status, body: errText }, "Anthropic API error");
+      req.log.error({ status: response.status, body: errText }, "Pollinations API error");
       res.status(500).json({ error: "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي" });
       return;
     }
 
     const data = (await response.json()) as {
-      content: Array<{ type: string; text: string }>;
+      choices: Array<{ message: { content: string } }>;
     };
 
-    const text = data.content.find((b) => b.type === "text")?.text ?? "";
+    const text = data.choices?.[0]?.message?.content ?? "";
     res.json({ message: text, role: "assistant" });
   } catch (err) {
     req.log.error({ err }, "Chat route error");
