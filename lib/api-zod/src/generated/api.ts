@@ -89,6 +89,47 @@ export const UpdateConversationResponse = zod.object({
 
 
 /**
+ * @summary Get all stored user memory facts
+ */
+export const ListMemoryResponseItem = zod.object({
+  "key": zod.string(),
+  "value": zod.string(),
+  "label": zod.string(),
+  "updatedAt": zod.coerce.date()
+})
+export const ListMemoryResponse = zod.array(ListMemoryResponseItem)
+
+
+/**
+ * @summary Create or update a memory fact
+ */
+export const UpsertMemoryBody = zod.object({
+  "key": zod.string(),
+  "value": zod.string(),
+  "label": zod.string()
+})
+
+export const UpsertMemoryResponse = zod.object({
+  "key": zod.string(),
+  "value": zod.string(),
+  "label": zod.string(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Delete a memory fact by key
+ */
+export const DeleteMemoryParams = zod.object({
+  "key": zod.coerce.string()
+})
+
+export const DeleteMemoryResponse = zod.object({
+  "success": zod.boolean()
+})
+
+
+/**
  * @summary Get all messages for a conversation
  */
 export const GetConversationMessagesParams = zod.object({

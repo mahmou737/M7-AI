@@ -14,6 +14,8 @@ tags:
     description: M7 AI chat operations
   - name: conversations
     description: Conversation history management
+  - name: memory
+    description: Persistent user memory facts
 paths:
   /healthz:
     get:
@@ -136,6 +138,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /memory:
+    get:
+      operationId: listMemory
+      tags: [memory]
+      summary: Get all stored user memory facts
+      responses:
+        "200":
+          description: All memory facts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MemoryItem"
+    post:
+      operationId: upsertMemory
+      tags: [memory]
+      summary: Create or update a memory fact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertMemoryInput"
+      responses:
+        "200":
+          description: Saved memory fact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryItem"
+  /memory/{key}:
+    delete:
+      operationId: deleteMemory
+      tags: [memory]
+      summary: Delete a memory fact by key
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /conversations/{id}/messages:
     get:
       operationId: getConversationMessages
@@ -246,4 +303,27 @@ components:
       required: [title]
       properties:
         title:
+          type: string
+    MemoryItem:
+      type: object
+      required: [key, value, label, updatedAt]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        label:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    UpsertMemoryInput:
+      type: object
+      required: [key, value, label]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        label:
           type: string

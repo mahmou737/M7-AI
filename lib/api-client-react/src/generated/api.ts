@@ -25,9 +25,11 @@ import type {
   Conversation,
   ErrorResponse,
   HealthStatus,
+  MemoryItem,
   StoredMessage,
   SuccessResponse,
-  UpdateConversationInput
+  UpdateConversationInput,
+  UpsertMemoryInput
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -495,6 +497,225 @@ export const useUpdateConversation = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getUpdateConversationMutationOptions(options));
+    }
+
+export const getListMemoryUrl = () => {
+
+
+
+
+  return `/api/memory`
+}
+
+/**
+ * @summary Get all stored user memory facts
+ */
+export const listMemory = async ( options?: RequestInit): Promise<MemoryItem[]> => {
+
+  return customFetch<MemoryItem[]>(getListMemoryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListMemoryQueryKey = () => {
+    return [
+    `/api/memory`
+    ] as const;
+    }
+
+
+export const getListMemoryQueryOptions = <TData = Awaited<ReturnType<typeof listMemory>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listMemory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListMemoryQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listMemory>>> = ({ signal }) => listMemory({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listMemory>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListMemoryQueryResult = NonNullable<Awaited<ReturnType<typeof listMemory>>>
+export type ListMemoryQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get all stored user memory facts
+ */
+
+export function useListMemory<TData = Awaited<ReturnType<typeof listMemory>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listMemory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListMemoryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getUpsertMemoryUrl = () => {
+
+
+
+
+  return `/api/memory`
+}
+
+/**
+ * @summary Create or update a memory fact
+ */
+export const upsertMemory = async (upsertMemoryInput: UpsertMemoryInput, options?: RequestInit): Promise<MemoryItem> => {
+
+  return customFetch<MemoryItem>(getUpsertMemoryUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(upsertMemoryInput)
+  }
+);}
+
+
+
+
+
+export const getUpsertMemoryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof upsertMemory>>, TError,{data: BodyType<UpsertMemoryInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof upsertMemory>>, TError,{data: BodyType<UpsertMemoryInput>}, TContext> => {
+
+const mutationKey = ['upsertMemory'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof upsertMemory>>, {data: BodyType<UpsertMemoryInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  upsertMemory(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpsertMemoryMutationResult = NonNullable<Awaited<ReturnType<typeof upsertMemory>>>
+    export type UpsertMemoryMutationBody = BodyType<UpsertMemoryInput>
+    export type UpsertMemoryMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create or update a memory fact
+ */
+export const useUpsertMemory = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof upsertMemory>>, TError,{data: BodyType<UpsertMemoryInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof upsertMemory>>,
+        TError,
+        {data: BodyType<UpsertMemoryInput>},
+        TContext
+      > => {
+      return useMutation(getUpsertMemoryMutationOptions(options));
+    }
+
+export const getDeleteMemoryUrl = (key: string,) => {
+
+
+
+
+  return `/api/memory/${key}`
+}
+
+/**
+ * @summary Delete a memory fact by key
+ */
+export const deleteMemory = async (key: string, options?: RequestInit): Promise<SuccessResponse> => {
+
+  return customFetch<SuccessResponse>(getDeleteMemoryUrl(key),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteMemoryMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteMemory>>, TError,{key: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteMemory>>, TError,{key: string}, TContext> => {
+
+const mutationKey = ['deleteMemory'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteMemory>>, {key: string}> = (props) => {
+          const {key} = props ?? {};
+
+          return  deleteMemory(key,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteMemoryMutationResult = NonNullable<Awaited<ReturnType<typeof deleteMemory>>>
+
+    export type DeleteMemoryMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Delete a memory fact by key
+ */
+export const useDeleteMemory = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteMemory>>, TError,{key: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteMemory>>,
+        TError,
+        {key: string},
+        TContext
+      > => {
+      return useMutation(getDeleteMemoryMutationOptions(options));
     }
 
 export const getGetConversationMessagesUrl = (id: string,) => {

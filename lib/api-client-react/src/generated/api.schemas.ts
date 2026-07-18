@@ -67,3 +67,16 @@ export interface UpdateConversationInput {
   title: string;
 }
 
+export interface MemoryItem {
+  key: string;
+  value: string;
+  label: string;
+  updatedAt: string;
+}
+
+export interface UpsertMemoryInput {
+  key: string;
+  value: string;
+  label: string;
+}
+

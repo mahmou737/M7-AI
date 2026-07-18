@@ -4,14 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  ArrowRight,
-  Send,
-  Loader2,
-  Plus,
-  MessageSquare,
-  Trash2,
-  Menu,
-  X,
+  ArrowRight, Send, Loader2, Plus, MessageSquare,
+  Trash2, Menu, X, Brain, ChevronDown, ChevronUp,
 } from "lucide-react";
 import {
   useSendMessage,
@@ -19,8 +13,10 @@ import {
   useGetConversationMessages,
   useCreateConversation,
   useDeleteConversation,
+  useListMemory,
+  useDeleteMemory,
   getListConversationsQueryKey,
-  getGetConversationMessagesQueryKey,
+  getListMemoryQueryKey,
 } from "@workspace/api-client-react";
 import type { ChatMessage } from "@workspace/api-client-react";
 import { cn } from "@/lib/utils";
@@ -49,7 +45,9 @@ export default function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [memoryExpanded, setMemoryExpanded] = useState(true);
+  const [deletingConvId, setDeletingConvId] = useState<string | null>(null);
+  const [deletingMemKey, setDeletingMemKey] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ── Queries ──────────────────────────────────────────────────────────────
@@ -57,12 +55,14 @@ export default function Chat() {
   const historyQuery = useGetConversationMessages(conversationId!, {
     query: { enabled: !!conversationId },
   });
+  const memoryQuery = useListMemory();
 
   const sendMessageMutation = useSendMessage();
   const createConversation = useCreateConversation();
   const deleteConversation = useDeleteConversation();
+  const deleteMemoryMutation = useDeleteMemory();
 
-  // ── Load history into local state when data arrives ───────────────────
+  // ── Load history ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (historyQuery.data) {
       setMessages(
@@ -74,16 +74,15 @@ export default function Chat() {
     }
   }, [historyQuery.data]);
 
-  // ── Auto-scroll ───────────────────────────────────────────────────────
+  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sendMessageMutation.isPending]);
 
-  // ── Send message ──────────────────────────────────────────────────────
+  // ── Send message ──────────────────────────────────────────────────────────
   const handleSend = useCallback(
     (text: string) => {
       if (!text.trim() || sendMessageMutation.isPending) return;
-
       const newMessages: ChatMessage[] = [
         ...messages,
         { role: "user", content: text.trim() },
@@ -99,10 +98,9 @@ export default function Chat() {
               ...prev,
               { role: "assistant", content: response.message },
             ]);
-            // Refresh sidebar titles after first message sets the title
-            queryClient.invalidateQueries({
-              queryKey: getListConversationsQueryKey(),
-            });
+            // Refresh sidebar titles + memory (AI may have saved new facts)
+            queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
+            queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
           },
         }
       );
@@ -115,47 +113,61 @@ export default function Chat() {
     handleSend(inputValue);
   };
 
-  // ── New conversation ──────────────────────────────────────────────────
+  // ── New conversation ──────────────────────────────────────────────────────
   const handleNewConversation = () => {
     createConversation.mutate(undefined, {
       onSuccess: (conv) => {
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
         setSidebarOpen(false);
+        setMessages([]);
         navigate(`/chat/${conv.id}`);
       },
     });
   };
 
-  // ── Delete conversation ───────────────────────────────────────────────
-  const handleDelete = (id: string) => {
-    setDeletingId(id);
+  // ── Delete conversation ───────────────────────────────────────────────────
+  const handleDeleteConversation = (id: string) => {
+    setDeletingConvId(id);
     deleteConversation.mutate(
       { id },
       {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-          setDeletingId(null);
-          if (id === conversationId) {
-            navigate("/");
-          }
+          setDeletingConvId(null);
+          if (id === conversationId) navigate("/");
         },
-        onError: () => setDeletingId(null),
+        onError: () => setDeletingConvId(null),
+      }
+    );
+  };
+
+  // ── Delete memory fact ────────────────────────────────────────────────────
+  const handleDeleteMemory = (key: string) => {
+    setDeletingMemKey(key);
+    deleteMemoryMutation.mutate(
+      { key },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
+          setDeletingMemKey(null);
+        },
+        onError: () => setDeletingMemKey(null),
       }
     );
   };
 
   const conversations = conversationsQuery.data ?? [];
+  const memoryFacts = memoryQuery.data ?? [];
 
-  // ── Sidebar ───────────────────────────────────────────────────────────
+  // ── Sidebar ───────────────────────────────────────────────────────────────
   const Sidebar = (
     <aside
       className={cn(
         "flex flex-col h-full w-72 bg-card/80 backdrop-blur-xl border-l border-white/5 flex-shrink-0",
-        "md:relative md:flex",
         sidebarOpen ? "flex" : "hidden md:flex"
       )}
     >
-      {/* Sidebar header */}
+      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-white/5">
         <div className="flex items-center gap-2">
           <span className="font-bold text-primary text-lg">M7</span>
@@ -169,7 +181,7 @@ export default function Chat() {
         </button>
       </div>
 
-      {/* New conversation button */}
+      {/* New conversation */}
       <div className="p-3">
         <Button
           className="w-full gap-2 rounded-xl"
@@ -187,7 +199,7 @@ export default function Chat() {
       </div>
 
       {/* Conversation list */}
-      <nav className="flex-1 overflow-y-auto p-2 space-y-1">
+      <nav className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
         {conversationsQuery.isLoading ? (
           <div className="flex justify-center py-8">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
@@ -224,14 +236,14 @@ export default function Chat() {
               <button
                 className={cn(
                   "opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-500/20 hover:text-red-400 transition-all flex-shrink-0",
-                  deletingId === conv.id && "opacity-100"
+                  deletingConvId === conv.id && "opacity-100"
                 )}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDelete(conv.id);
+                  handleDeleteConversation(conv.id);
                 }}
               >
-                {deletingId === conv.id ? (
+                {deletingConvId === conv.id ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <Trash2 className="w-3.5 h-3.5" />
@@ -241,6 +253,73 @@ export default function Chat() {
           ))
         )}
       </nav>
+
+      {/* ── Memory Panel ──────────────────────────────────────────────────── */}
+      <div className="border-t border-white/5 flex-shrink-0">
+        {/* Toggle header */}
+        <button
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
+          onClick={() => setMemoryExpanded((v) => !v)}
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Brain className="w-4 h-4 text-primary" />
+            <span>الذاكرة</span>
+            {memoryFacts.length > 0 && (
+              <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+                {memoryFacts.length}
+              </span>
+            )}
+          </div>
+          {memoryExpanded ? (
+            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+          ) : (
+            <ChevronUp className="w-4 h-4 text-muted-foreground" />
+          )}
+        </button>
+
+        {/* Facts list */}
+        {memoryExpanded && (
+          <div className="px-3 pb-3 space-y-1 max-h-44 overflow-y-auto">
+            {memoryQuery.isLoading ? (
+              <div className="flex justify-center py-3">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : memoryFacts.length === 0 ? (
+              <p className="text-center text-muted-foreground text-xs py-3">
+                لا توجد معلومات محفوظة بعد.
+                <br />
+                <span className="opacity-60">جرّب: «اسمي محمود»</span>
+              </p>
+            ) : (
+              memoryFacts.map((fact) => (
+                <div
+                  key={fact.key}
+                  className="group flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <span className="text-[10px] text-muted-foreground block">
+                      {fact.label}
+                    </span>
+                    <span className="text-xs font-medium truncate block">
+                      {fact.value}
+                    </span>
+                  </div>
+                  <button
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 hover:text-red-400 transition-all flex-shrink-0"
+                    onClick={() => handleDeleteMemory(fact.key)}
+                  >
+                    {deletingMemKey === fact.key ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-3 h-3" />
+                    )}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Back to home */}
       <div className="p-3 border-t border-white/5">
@@ -257,7 +336,6 @@ export default function Chat() {
 
   return (
     <div className="flex h-[100dvh] bg-background overflow-hidden" dir="rtl">
-      {/* Sidebar */}
       {Sidebar}
 
       {/* Mobile overlay */}
@@ -268,7 +346,7 @@ export default function Chat() {
         />
       )}
 
-      {/* Main chat area */}
+      {/* Main chat */}
       <div className="flex flex-col flex-1 min-w-0">
         {/* Header */}
         <header className="glass flex-none flex items-center gap-3 px-4 h-16 border-b border-white/5 z-10">
@@ -290,6 +368,13 @@ export default function Chat() {
               </div>
             </div>
           </div>
+          {/* Show memory count in header on mobile */}
+          {memoryFacts.length > 0 && (
+            <div className="mr-auto flex items-center gap-1 text-xs text-muted-foreground md:hidden">
+              <Brain className="w-3.5 h-3.5 text-primary" />
+              <span>{memoryFacts.length} معلومة</span>
+            </div>
+          )}
         </header>
 
         {/* Messages */}
