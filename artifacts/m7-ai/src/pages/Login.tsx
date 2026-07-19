@@ -76,11 +76,11 @@ export default function Login() {
         // Network / config errors
         "auth/network-request-failed":  "تعذّر الاتصال بالإنترنت، تحقق من اتصالك",
         "auth/internal-error":          "خطأ داخلي في Firebase",
-        "auth/configuration-not-found": "إعداد Firebase غير مكتمل",
+        "auth/configuration-not-found": "❌ Firebase Authentication غير مفعّل — شاهد التعليمات أدناه",
       };
 
-      // Show mapped message, or fall back to the real Firebase error message
-      setError(messages[code] ?? (code ? `خطأ Firebase: ${code}` : "حدث خطأ غير متوقع، حاول مرة أخرى"));
+      // Show mapped message, or fall back to the real Firebase error code
+      setError(messages[code] ?? (code ? `[${code}] حدث خطأ، حاول مرة أخرى` : "حدث خطأ غير متوقع"));
     } finally {
       setLoading(false);
     }
