@@ -165,7 +165,7 @@ export default function Chat() {
   const Sidebar = (
     <aside
       className={cn(
-        "flex flex-col h-full w-72 bg-card/80 backdrop-blur-xl border-l border-white/5 flex-shrink-0",
+        "relative z-20 flex flex-col h-full w-72 bg-card/80 backdrop-blur-xl border-l border-white/5 flex-shrink-0",
         sidebarOpen ? "flex" : "hidden md:flex"
       )}
     >
