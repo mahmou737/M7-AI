@@ -38,16 +38,30 @@ export async function registerUser(
   password: string,
   displayName: string
 ): Promise<User> {
+  // Step 1: Create the Firebase Auth account (throws on any auth error)
   const credential = await createUserWithEmailAndPassword(auth, email, password);
-  await updateProfile(credential.user, { displayName });
-  // Save profile in Firestore
-  await setDoc(doc(db, "users", credential.user.uid), {
-    uid: credential.user.uid,
-    displayName,
-    email,
-    photoURL: null,
-    createdAt: serverTimestamp(),
-  });
+
+  // Step 2: Set display name — best effort, never blocks login
+  try {
+    await updateProfile(credential.user, { displayName });
+  } catch (e) {
+    console.warn("[M7] updateProfile failed:", e);
+  }
+
+  // Step 3: Save profile to Firestore — best effort
+  // If Firestore isn't enabled yet the user is still created & logged in
+  try {
+    await setDoc(doc(db, "users", credential.user.uid), {
+      uid: credential.user.uid,
+      displayName,
+      email,
+      photoURL: null,
+      createdAt: serverTimestamp(),
+    });
+  } catch (e) {
+    console.warn("[M7] Firestore profile save failed (Firestore may not be enabled):", e);
+  }
+
   return credential.user;
 }
 

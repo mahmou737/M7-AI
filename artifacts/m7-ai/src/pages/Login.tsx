@@ -58,16 +58,29 @@ export default function Login() {
       navigate("/");
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code ?? "";
+      const message = (err as { message?: string })?.message ?? "";
+      console.error("[M7 Auth] error code:", code, "| message:", message);
+
       const messages: Record<string, string> = {
-        "auth/user-not-found": "البريد الإلكتروني غير مسجل",
-        "auth/wrong-password": "كلمة المرور غير صحيحة",
-        "auth/invalid-credential": "البريد أو كلمة المرور غير صحيحة",
-        "auth/email-already-in-use": "البريد الإلكتروني مستخدم بالفعل",
-        "auth/weak-password": "كلمة المرور ضعيفة جداً",
-        "auth/invalid-email": "صيغة البريد الإلكتروني غير صحيحة",
-        "auth/too-many-requests": "محاولات كثيرة، حاول لاحقاً",
+        // Registration errors
+        "auth/email-already-in-use":    "البريد الإلكتروني مستخدم بالفعل",
+        "auth/weak-password":           "كلمة المرور ضعيفة — يجب أن تكون 6 أحرف على الأقل",
+        "auth/invalid-email":           "صيغة البريد الإلكتروني غير صحيحة",
+        "auth/operation-not-allowed":   "تسجيل البريد الإلكتروني غير مفعّل — فعّله من Firebase Console",
+        // Login errors
+        "auth/user-not-found":          "البريد الإلكتروني غير مسجل",
+        "auth/wrong-password":          "كلمة المرور غير صحيحة",
+        "auth/invalid-credential":      "البريد أو كلمة المرور غير صحيحة",
+        "auth/user-disabled":           "هذا الحساب موقوف",
+        "auth/too-many-requests":       "محاولات كثيرة — حاول لاحقاً",
+        // Network / config errors
+        "auth/network-request-failed":  "تعذّر الاتصال بالإنترنت، تحقق من اتصالك",
+        "auth/internal-error":          "خطأ داخلي في Firebase",
+        "auth/configuration-not-found": "إعداد Firebase غير مكتمل",
       };
-      setError(messages[code] ?? "حدث خطأ، حاول مرة أخرى");
+
+      // Show mapped message, or fall back to the real Firebase error message
+      setError(messages[code] ?? (code ? `خطأ Firebase: ${code}` : "حدث خطأ غير متوقع، حاول مرة أخرى"));
     } finally {
       setLoading(false);
     }
