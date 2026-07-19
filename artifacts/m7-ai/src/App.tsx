@@ -55,8 +55,8 @@ function Router() {
       <Route path="/login" component={() => <GuestRoute component={Login} />} />
       <Route path="/forgot-password" component={() => <GuestRoute component={ForgotPassword} />} />
 
-      {/* Protected routes — require login */}
-      <Route path="/" component={() => <ProtectedRoute component={Home} />} />
+      {/* Home — public (handles guest & logged-in states internally) */}
+      <Route path="/" component={Home} />
       <Route path="/chat/:id" component={() => <ProtectedRoute component={Chat} />} />
       <Route path="/profile" component={() => <ProtectedRoute component={Profile} />} />
 
