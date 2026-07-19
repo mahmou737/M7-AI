@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ArrowRight, Send, Loader2, Plus, MessageSquare,
-  Trash2, Menu, X, Brain, ChevronDown, ChevronUp,
+  Trash2, Menu, X, Brain, ChevronDown, ChevronUp, UserCircle,
 } from "lucide-react";
 import {
   useSendMessage,
@@ -20,6 +20,7 @@ import {
 } from "@workspace/api-client-react";
 import type { ChatMessage } from "@workspace/api-client-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 const SUGGESTIONS = [
   "كيف يمكنني تحسين إنتاجيتي؟",
@@ -41,6 +42,7 @@ export default function Chat() {
   const { id: conversationId } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
@@ -173,12 +175,22 @@ export default function Chat() {
           <span className="font-bold text-primary text-lg">M7</span>
           <span className="text-xs text-muted-foreground">المحادثات</span>
         </div>
-        <button
-          className="md:hidden text-muted-foreground hover:text-foreground"
-          onClick={() => setSidebarOpen(false)}
-        >
-          <X className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Profile button */}
+          <button
+            onClick={() => navigate("/profile")}
+            title={user?.displayName ?? user?.email ?? "الملف الشخصي"}
+            className="text-muted-foreground hover:text-primary transition-colors p-1 rounded-lg hover:bg-primary/10"
+          >
+            <UserCircle className="w-5 h-5" />
+          </button>
+          <button
+            className="md:hidden text-muted-foreground hover:text-foreground"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* New conversation */}

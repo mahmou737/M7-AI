@@ -100,9 +100,20 @@ router.post("/", async (req, res) => {
   const { messages, conversationId } = parsed.data;
   const lastMessage = messages[messages.length - 1];
 
+  // Extract Firebase UID from Authorization header
+  const authHeader = req.headers.authorization;
+  const userId =
+    authHeader?.startsWith("Bearer ") && authHeader.length > 7
+      ? authHeader.slice(7)
+      : "anonymous";
+
   try {
-    // ── 1. Load memory facts ────────────────────────────────────────────────
-    const facts = await db.select().from(userMemoryTable).orderBy(userMemoryTable.key);
+    // ── 1. Load memory facts (scoped to this user) ──────────────────────────
+    const facts = await db
+      .select()
+      .from(userMemoryTable)
+      .where(eq(userMemoryTable.userId, userId))
+      .orderBy(userMemoryTable.key);
     const systemPrompt = buildSystemPrompt(facts);
 
     // ── 2. Call Pollinations AI ─────────────────────────────────────────────
@@ -135,9 +146,9 @@ router.post("/", async (req, res) => {
       for (const fact of newFacts) {
         await db
           .insert(userMemoryTable)
-          .values({ ...fact, updatedAt: new Date() })
+          .values({ userId, ...fact, updatedAt: new Date() })
           .onConflictDoUpdate({
-            target: userMemoryTable.key,
+            target: [userMemoryTable.userId, userMemoryTable.key],
             set: { value: fact.value, label: fact.label, updatedAt: new Date() },
           });
       }

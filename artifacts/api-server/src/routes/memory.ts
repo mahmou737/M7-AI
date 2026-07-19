@@ -1,27 +1,29 @@
 /**
  * Memory Routes — /api/memory
  *
- * Stores persistent user facts (name, city, age, …).
- * The chat route reads these facts on every request and injects them into
- * the system prompt so the AI always "remembers" the user.
- *
- * Endpoints:
- *   GET    /memory          — list all facts
- *   POST   /memory          — create or update a fact (upsert by key)
- *   DELETE /memory/:key     — remove a fact
+ * Scoped by Firebase UID (via Authorization: Bearer <uid> header).
+ * Each user has their own set of memory facts.
  */
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db, userMemoryTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
+function getUserId(req: Parameters<Parameters<IRouter["get"]>[1]>[0]): string {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ") && auth.length > 7) return auth.slice(7);
+  return "anonymous";
+}
+
 // ── GET /memory ─────────────────────────────────────────────────────────────
 router.get("/", async (req, res) => {
+  const userId = getUserId(req);
   try {
     const facts = await db
       .select()
       .from(userMemoryTable)
+      .where(eq(userMemoryTable.userId, userId))
       .orderBy(userMemoryTable.key);
     res.json(facts);
   } catch (err) {
@@ -31,8 +33,8 @@ router.get("/", async (req, res) => {
 });
 
 // ── POST /memory ─────────────────────────────────────────────────────────────
-// Creates or updates (upserts) a fact identified by its key.
 router.post("/", async (req, res) => {
+  const userId = getUserId(req);
   const { key, value, label } = req.body as {
     key?: string;
     value?: string;
@@ -47,9 +49,15 @@ router.post("/", async (req, res) => {
   try {
     const [fact] = await db
       .insert(userMemoryTable)
-      .values({ key: key.trim(), value: value.trim(), label: label.trim(), updatedAt: new Date() })
+      .values({
+        userId,
+        key: key.trim(),
+        value: value.trim(),
+        label: label.trim(),
+        updatedAt: new Date(),
+      })
       .onConflictDoUpdate({
-        target: userMemoryTable.key,
+        target: [userMemoryTable.userId, userMemoryTable.key],
         set: { value: value.trim(), label: label.trim(), updatedAt: new Date() },
       })
       .returning();
@@ -62,10 +70,16 @@ router.post("/", async (req, res) => {
 
 // ── DELETE /memory/:key ──────────────────────────────────────────────────────
 router.delete("/:key", async (req, res) => {
+  const userId = getUserId(req);
   try {
     const result = await db
       .delete(userMemoryTable)
-      .where(eq(userMemoryTable.key, req.params.key))
+      .where(
+        and(
+          eq(userMemoryTable.userId, userId),
+          eq(userMemoryTable.key, req.params.key)
+        )
+      )
       .returning();
     if (result.length === 0) {
       res.status(404).json({ error: "المعلومة غير موجودة" });

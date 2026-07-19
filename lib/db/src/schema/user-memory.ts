@@ -1,18 +1,25 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
 /**
- * Persistent memory facts about the user.
+ * Persistent memory facts about the user, scoped by Firebase UID.
  * Each row is a single fact (e.g. name, city, age).
- * Key is the unique identifier; upsert to update.
+ * Composite PK: (user_id, key) — each user has their own facts.
  */
-export const userMemoryTable = pgTable("user_memory", {
-  key: text("key").primaryKey(),       // e.g. "name", "city", "age"
-  value: text("value").notNull(),      // e.g. "محمود", "الرياض", "25"
-  label: text("label").notNull(),      // human-readable Arabic label
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const userMemoryTable = pgTable(
+  "user_memory",
+  {
+    userId: text("user_id").notNull().default("anonymous"),
+    key: text("key").notNull(),       // e.g. "name", "city"
+    value: text("value").notNull(),   // e.g. "محمود", "الرياض"
+    label: text("label").notNull(),   // Arabic label
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.key] }),
+  ]
+);
 
 export const insertUserMemorySchema = createInsertSchema(userMemoryTable).omit({
   updatedAt: true,

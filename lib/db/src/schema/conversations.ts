@@ -6,6 +6,7 @@ export const conversationsTable = pgTable("conversations", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id").notNull().default("anonymous"),
   title: text("title").notNull().default("محادثة جديدة"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
