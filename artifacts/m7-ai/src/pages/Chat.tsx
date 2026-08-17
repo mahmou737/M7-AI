@@ -53,10 +53,25 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ── Queries ──────────────────────────────────────────────────────────────
-  const conversationsQuery = useListConversations();
-  const historyQuery = useGetConversationMessages(conversationId!, {
-    query: { enabled: !!conversationId },
-  });
+const convs = useListConversations();
+const id = conversationId!;
+const opt = { enabled: Boolean(id) };
+const history = useGetConversationMessages(id, );
+
+
+
+
+
+
+
+
+    
+
+
+ 
+
+
+  
   const memoryQuery = useListMemory();
 
   const sendMessageMutation = useSendMessage();
@@ -66,15 +81,15 @@ export default function Chat() {
 
   // ── Load history ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (historyQuery.data) {
+    if (history.data) {
       setMessages(
-        historyQuery.data.map((m) => ({
+        history.data.map((m) => ({
           role: m.role as "user" | "assistant",
           content: m.content,
         }))
       );
     }
-  }, [historyQuery.data]);
+  }, [history.data]);
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -158,7 +173,7 @@ export default function Chat() {
     );
   };
 
-  const conversations = conversationsQuery.data ?? [];
+  const conversations = convs.data ?? [];
   const memoryFacts = memoryQuery.data ?? [];
 
   // ── Sidebar ───────────────────────────────────────────────────────────────
@@ -212,7 +227,7 @@ export default function Chat() {
 
       {/* Conversation list */}
       <nav className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
-        {conversationsQuery.isLoading ? (
+        {convs.isLoading ? (
           <div className="flex justify-center py-8">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
           </div>
@@ -392,7 +407,7 @@ export default function Chat() {
         {/* Messages */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           <div className="max-w-3xl mx-auto flex flex-col space-y-6">
-            {historyQuery.isLoading ? (
+            {history.isLoading ? (
               <div className="flex justify-center py-16">
                 <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
               </div>
