@@ -190,9 +190,13 @@ router.post("/", async (req, res) => {
       })),
     ];
 
-    const groqApiKey = process.env.GROQ_API_KEY;
+    const apiKey = (process.env.GROQ_API_KEY || "").trim();
+    req.log.info(
+      { groqApiKeyConfigured: Boolean(apiKey) },
+      "Groq API key status"
+    );
 
-    if (!groqApiKey) {
+    if (!apiKey) {
       req.log.error("GROQ_API_KEY is not configured");
       res.status(500).json({
         error: "مفتاح Groq API غير مُعد",
@@ -206,7 +210,7 @@ router.post("/", async (req, res) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${groqApiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
