@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import {
   ArrowRight, Send, Loader2, Plus, MessageSquare,
   Trash2, Menu, X, Brain, ChevronDown, ChevronUp, UserCircle,
+  Mic, Volume2, VolumeX,
 } from "lucide-react";
 import {
   useSendMessage,
@@ -29,6 +30,45 @@ const SUGGESTIONS = [
   "ما هي أفضل لغات البرمجة؟",
 ];
 
+type SpeechRecognitionResultEvent = {
+  resultIndex: number;
+  results: ArrayLike<{
+    isFinal: boolean;
+    0: { transcript: string };
+  }>;
+};
+
+type SpeechRecognitionErrorEvent = {
+  error?: string;
+};
+
+type SpeechRecognitionInstance = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === "undefined") return null;
+
+  const speechWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
 function formatDate(dateStr: string) {
   const date = new Date(dateStr);
   const now = new Date();
@@ -50,7 +90,12 @@ export default function Chat() {
   const [memoryExpanded, setMemoryExpanded] = useState(true);
   const [deletingConvId, setDeletingConvId] = useState<string | null>(null);
   const [deletingMemKey, setDeletingMemKey] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [speechError, setSpeechError] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const voiceTranscriptRef = useRef("");
 
   // ── Queries ──────────────────────────────────────────────────────────────
 const convs = useListConversations();
@@ -96,6 +141,55 @@ const history = useGetConversationMessages(id, );
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sendMessageMutation.isPending]);
 
+  // ── Voice cleanup ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.abort();
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  // ── Text to speech ─────────────────────────────────────────────────────────
+  const speakResponse = useCallback((text: string) => {
+    if (
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window) ||
+      typeof SpeechSynthesisUtterance === "undefined"
+    ) {
+      setSpeechError("القراءة الصوتية غير مدعومة في هذا المتصفح");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "ar-SA";
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+
+    const arabicVoice = window.speechSynthesis
+      .getVoices()
+      .find((voice) => voice.lang.toLowerCase().startsWith("ar"));
+    if (arabicVoice) {
+      utterance.voice = arabicVoice;
+    }
+
+    utterance.onstart = () => {
+      setSpeechError("");
+      setIsSpeaking(true);
+    };
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = (event) => {
+      setIsSpeaking(false);
+      if (event.error !== "canceled") {
+        setSpeechError("تعذرت قراءة الرد صوتياً");
+      }
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
   // ── Send message ──────────────────────────────────────────────────────────
   const handleSend = useCallback(
     (text: string) => {
@@ -115,6 +209,7 @@ const history = useGetConversationMessages(id, );
               ...prev,
               { role: "assistant", content: response.message },
             ]);
+            speakResponse(response.message);
             // Refresh sidebar titles + memory (AI may have saved new facts)
             queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
             queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
@@ -122,8 +217,92 @@ const history = useGetConversationMessages(id, );
         }
       );
     },
-    [messages, conversationId, sendMessageMutation, queryClient]
+    [messages, conversationId, sendMessageMutation, queryClient, speakResponse]
   );
+
+  // ── Speech to text ─────────────────────────────────────────────────────────
+  const handleVoiceToggle = useCallback(() => {
+    if (sendMessageMutation.isPending) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const SpeechRecognition = getSpeechRecognitionConstructor();
+    if (!SpeechRecognition) {
+      setSpeechError("الإملاء الصوتي غير مدعوم في هذا المتصفح");
+      return;
+    }
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "ar-SA";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    voiceTranscriptRef.current = "";
+    setInputValue("");
+    setSpeechError("");
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setSpeechError("");
+    };
+
+    recognition.onresult = (event) => {
+      let finalTranscript = "";
+      let interimTranscript = "";
+
+      for (let index = 0; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript ?? "";
+        if (result.isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      voiceTranscriptRef.current = finalTranscript.trim();
+      setInputValue([finalTranscript, interimTranscript].filter(Boolean).join(" ").trim());
+    };
+
+    recognition.onerror = (event) => {
+      setIsListening(false);
+      recognitionRef.current = null;
+
+      const errorMessage =
+        event.error === "not-allowed" || event.error === "service-not-allowed"
+          ? "اسمح للمتصفح باستخدام الميكروفون لبدء المحادثة الصوتية"
+          : "تعذر التقاط الصوت، حاول مرة أخرى";
+      setSpeechError(errorMessage);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      recognitionRef.current = null;
+
+      const transcript = voiceTranscriptRef.current.trim();
+      voiceTranscriptRef.current = "";
+      if (transcript) {
+        handleSend(transcript);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      recognitionRef.current = null;
+      setIsListening(false);
+      setSpeechError("تعذر تشغيل الميكروفون، حاول مرة أخرى");
+    }
+  }, [handleSend, isListening, sendMessageMutation.isPending]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -476,9 +655,27 @@ const history = useGetConversationMessages(id, );
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="اكتب رسالتك هنا..."
-              className="pl-14 pr-6 h-14 bg-card/50 border-white/10 hover:border-white/20 focus-visible:ring-primary/50 text-base shadow-lg"
+              className="pl-28 pr-6 h-14 bg-card/50 border-white/10 hover:border-white/20 focus-visible:ring-primary/50 text-base shadow-lg"
               disabled={sendMessageMutation.isPending}
             />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={handleVoiceToggle}
+              disabled={sendMessageMutation.isPending}
+              aria-label={isListening ? "إيقاف الاستماع" : "بدء المحادثة الصوتية"}
+              title={isListening ? "إيقاف الاستماع" : "تحدث مع M7 صوتياً"}
+              className={cn(
+                "absolute left-14 h-10 w-10 rounded-full transition-all duration-200",
+                isListening
+                  ? "bg-red-500/20 text-red-400 ring-2 ring-red-400/30 animate-pulse hover:bg-red-500/30"
+                  : "text-muted-foreground hover:text-primary hover:bg-primary/10",
+                "disabled:opacity-50"
+              )}
+            >
+              <Mic className="w-4 h-4" />
+            </Button>
             <Button
               type="submit"
               size="icon"
@@ -492,6 +689,31 @@ const history = useGetConversationMessages(id, );
               )}
             </Button>
           </form>
+          {(isListening || isSpeaking || speechError) && (
+            <div
+              className={cn(
+                "mt-2 flex items-center justify-center gap-1.5 text-xs",
+                speechError
+                  ? "text-red-400"
+                  : isListening
+                    ? "text-red-400"
+                    : "text-primary"
+              )}
+              aria-live="polite"
+            >
+              {speechError ? (
+                <VolumeX className="w-3.5 h-3.5" />
+              ) : isListening ? (
+                <Mic className="w-3.5 h-3.5 animate-pulse" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5 animate-pulse" />
+              )}
+              <span>
+                {speechError ||
+                  (isListening ? "جارٍ الاستماع... تحدث الآن" : "M7 يتحدث...")}
+              </span>
+            </div>
+          )}
           <div className="text-center mt-3">
             <p className="text-[10px] text-muted-foreground/60">
               قد يخطئ M7 AI أحياناً. يُرجى التحقق من المعلومات المهمة.
