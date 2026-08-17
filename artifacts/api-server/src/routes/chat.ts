@@ -213,7 +213,7 @@ router.post("/", async (req, res) => {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: "allam-2-7b",
         messages: groqMessages,
       }),
       }
