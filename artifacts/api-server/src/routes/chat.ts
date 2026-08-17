@@ -178,8 +178,8 @@ router.post("/", async (req, res) => {
 
     const systemPrompt = buildSystemPrompt(savedFacts);
 
-    // الاتصال بـ Pollinations AI عبر OpenAI-compatible JSON API
-    const pollinationsMessages = [
+    // الاتصال بـ Groq عبر OpenAI-compatible JSON API
+    const groqMessages = [
       {
         role: "system" as const,
         content: systemPrompt,
@@ -190,17 +190,30 @@ router.post("/", async (req, res) => {
       })),
     ];
 
-    const response = await fetch("https://text.pollinations.ai/openai", {
+    const groqApiKey = process.env.GROQ_API_KEY;
+
+    if (!groqApiKey) {
+      req.log.error("GROQ_API_KEY is not configured");
+      res.status(500).json({
+        error: "مفتاح Groq API غير مُعد",
+      });
+      return;
+    }
+
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        Authorization: `Bearer ${groqApiKey}`,
       },
       body: JSON.stringify({
-        model: "openai",
-        messages: pollinationsMessages,
+        model: "llama-3.3-70b-versatile",
+        messages: groqMessages,
       }),
-    });
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -209,7 +222,7 @@ router.post("/", async (req, res) => {
           status: response.status,
           body: errorText,
         },
-        "Pollinations API error"
+        "Groq API error"
       );
 
       res.status(500).json({
@@ -218,7 +231,7 @@ router.post("/", async (req, res) => {
       return;
     }
 
-    // استلام الرد بصيغة JSON من واجهة OpenAI-compatible
+    // استلام الرد بصيغة JSON من واجهة Groq المتوافقة مع OpenAI
     const data = (await response.json()) as {
       choices?: Array<{
         message?: {
