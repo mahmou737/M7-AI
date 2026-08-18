@@ -201,8 +201,10 @@ export default function Login() {
               <button
                 type="button"
                 onClick={() => navigate("/forgot-password")}
-                className="text-xs text-primary/70 hover:text-primary transition-colors"
+                aria-label="استعادة كلمة المرور"
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-primary/80 hover:bg-primary/10 hover:text-primary transition-all"
               >
+                <Mail className="w-3.5 h-3.5" />
                 نسيت كلمة المرور؟
               </button>
             </div>

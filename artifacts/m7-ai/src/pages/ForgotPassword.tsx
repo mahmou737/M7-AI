@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Loader2, Mail, ArrowRight, CheckCircle } from "lucide-react";
+import { Loader2, Mail, ArrowRight, CheckCircle, ShieldCheck } from "lucide-react";
 
 export default function ForgotPassword() {
   const [, navigate] = useLocation();
@@ -59,7 +59,7 @@ export default function ForgotPassword() {
           </div>
           <h1 className="text-xl font-bold">استعادة كلمة المرور</h1>
           <p className="text-sm text-muted-foreground text-center">
-            أدخل بريدك الإلكتروني وسنرسل لك رابط إعادة التعيين
+            أدخل بريدك الإلكتروني وسيرسل Firebase رابطًا آمنًا لإعادة التعيين
           </p>
         </div>
 
@@ -68,8 +68,12 @@ export default function ForgotPassword() {
             <CheckCircle className="w-12 h-12 text-green-400" />
             <p className="font-semibold">تم الإرسال!</p>
             <p className="text-sm text-muted-foreground">
-              تحقق من بريدك الإلكتروني واتبع التعليمات لإعادة تعيين كلمة المرور.
+              تحقق من بريدك الإلكتروني واتبع الرابط لإدخال كلمة مرور جديدة.
             </p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-primary/5 border border-primary/10 rounded-xl px-3 py-2">
+              <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0" />
+              <span>إذا لم تجد الرسالة، افحص مجلد البريد غير المرغوب فيه.</span>
+            </div>
             <Button
               variant="outline"
               className="mt-2 rounded-xl"
@@ -88,6 +92,7 @@ export default function ForgotPassword() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="pr-10 text-right"
+                autoComplete="email"
                 disabled={loading}
               />
             </div>
@@ -98,7 +103,7 @@ export default function ForgotPassword() {
             )}
             <Button type="submit" className="w-full rounded-xl gap-2" disabled={loading}>
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-              إرسال رابط الاستعادة
+              {loading ? "جارٍ الإرسال..." : "إرسال رابط الاستعادة"}
             </Button>
           </form>
         )}
