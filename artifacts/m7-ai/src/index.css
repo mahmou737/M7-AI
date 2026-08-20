@@ -50,7 +50,46 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-:root, .dark {
+/* الألوان الافتراضية (الوضع الفاتح Light Mode) */
+:root {
+  --background: 0 0% 98%;
+  --foreground: 0 0% 10%;
+  --border: 0 0% 88%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 10%;
+  --card-border: 0 0% 90%;
+  
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 10%;
+  --popover-border: 0 0% 90%;
+
+  --primary: 38 92% 50%;
+  --primary-foreground: 0 0% 100%;
+  
+  --secondary: 0 0% 92%;
+  --secondary-foreground: 0 0% 10%;
+  
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 40%;
+  
+  --accent: 38 92% 50%;
+  --accent-foreground: 0 0% 100%;
+  
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --input: 0 0% 88%;
+  --ring: 38 92% 50%;
+
+  --app-font-sans: 'Cairo', sans-serif;
+  --app-font-serif: Georgia, serif;
+  --app-font-mono: Menlo, monospace;
+  
+  --radius: 0.75rem;
+}
+
+/* ألوان الوضع الداكن (Dark Mode) */
+.dark {
   --background: 0 0% 3%;
   --foreground: 0 0% 95%;
   --border: 0 0% 15%;
@@ -79,13 +118,8 @@
 
   --input: 0 0% 15%;
   --ring: 38 92% 50%;
-
-  --app-font-sans: 'Cairo', sans-serif;
-  --app-font-serif: Georgia, serif;
-  --app-font-mono: Menlo, monospace;
-  
-  --radius: 0.75rem;
 }
+
 
 @layer base {
   * {

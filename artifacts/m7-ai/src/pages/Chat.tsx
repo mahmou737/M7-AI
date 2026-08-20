@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import {
   ArrowRight, Send, Loader2, Plus, MessageSquare,
   Trash2, Menu, X, Brain, ChevronDown, ChevronUp, UserCircle,
-  Mic, Volume2, VolumeX,
+  Mic, Volume2, VolumeX,Copy, Check , Search 
 } from "lucide-react";
 import {
   useSendMessage,
@@ -22,6 +22,7 @@ import {
 import type { ChatMessage } from "@workspace/api-client-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { useTranslation } from 'react-i18next';
 
 const SUGGESTIONS = [
   "كيف يمكنني تحسين إنتاجيتي؟",
@@ -83,10 +84,32 @@ export default function Chat() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+const { t, i18n } = useTranslation();
+
+const toggleLanguage = () => {
+  const newLang = i18n.language === 'ar' ? 'en' : 'ar';
+  i18n.changeLanguage(newLang);
+};
+useEffect(() => {
+  document.dir = i18n.language === 'ar' ? 'rtl' : 'ltr';
+}, [i18n.language]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+const [searchQuery, setSearchQuery] = useState("");
+
+
+
+          const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  const handleCopy = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIdx(idx);
+    setTimeout(() => {
+      setCopiedIdx(null);
+    }, 2000);
+  };
   const [memoryExpanded, setMemoryExpanded] = useState(true);
   const [deletingConvId, setDeletingConvId] = useState<string | null>(null);
   const [deletingMemKey, setDeletingMemKey] = useState<string | null>(null);
@@ -102,20 +125,6 @@ const convs = useListConversations();
 const id = conversationId!;
 const opt = { enabled: Boolean(id) };
 const history = useGetConversationMessages(id, );
-
-
-
-
-
-
-
-
-    
-
-
- 
-
-
   
   const memoryQuery = useListMemory();
 
@@ -377,7 +386,14 @@ const history = useGetConversationMessages(id, );
             className="text-muted-foreground hover:text-primary transition-colors p-1 rounded-lg hover:bg-primary/10"
           >
             <UserCircle className="w-5 h-5" />
-          </button>
+          </button><button
+  onClick={toggleLanguage}
+  className="text-xs font-bold text-muted-foreground hover:text-primary transition-colors p-1 rounded-lg hover:bg-primary/10 px-2"
+  title="تغيير اللغة"
+>
+  {i18n.language === 'ar' ? 'EN' : 'عربي'}
+</button>
+
           <button
             className="md:hidden text-muted-foreground hover:text-foreground"
             onClick={() => setSidebarOpen(false)}
@@ -403,6 +419,18 @@ const history = useGetConversationMessages(id, );
           محادثة جديدة
         </Button>
       </div>
+<div className="px-3 my-2">
+  <div className="relative flex items-center">
+    <Search className="w-4 h-4 absolute right-3 text-muted-foreground" />
+    <input
+      type="text"
+      placeholder="بحث في المحادثات..."
+      value={searchQuery}
+      onChange={(e) => setSearchQuery(e.target.value)}
+      className="w-full pl-3 pr-9 py-1.5 text-sm rounded-lg bg-white/5 border border-white/10 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-all"
+    />
+  </div>
+</div>
 
       {/* Conversation list */}
       <nav className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
@@ -415,7 +443,11 @@ const history = useGetConversationMessages(id, );
             لا توجد محادثات سابقة
           </p>
         ) : (
-          conversations.map((conv) => (
+  
+           conversations?.filter((conv: any) =>
+  conv.title?.toLowerCase().includes(searchQuery.toLowerCase())
+).map((conv) => (
+
             <div
               key={conv.id}
               className={cn(
@@ -621,16 +653,47 @@ const history = useGetConversationMessages(id, );
                       msg.role === "user" ? "justify-start" : "justify-end"
                     )}
                   >
-                    <div
-                      className={cn(
-                        "max-w-[85%] sm:max-w-[75%] px-5 py-3.5 rounded-2xl text-sm leading-relaxed shadow-sm whitespace-pre-wrap",
-                        msg.role === "user"
-                          ? "bg-primary text-primary-foreground rounded-tr-sm"
-                          : "glass rounded-tl-sm border-white/5"
-                      )}
-                    >
-                      {msg.content}
-                    </div>
+<div className="relative group">
+  <div
+    className={cn(
+      "max-w-[85%] sm:max-w-[75%] px-5 py-3.5 rounded-2xl text-sm leading-relaxed shadow-sm whitespace-pre-wrap",
+      msg.role === "user"
+        ? "bg-primary text-primary-foreground rounded-tr-sm"
+        : "glass rounded-tl-sm border-white/5 pl-10"
+    )}
+  >
+    {msg.content}
+  </div>
+
+  {/* زرار القراءة الصوتية لردود الذكاء الاصطناعي */}
+  {msg.role === "assistant" && (
+  <div className="absolute bottom-2 left-2 flex items-center gap-1">
+    {/* زرار النسخ الجديد */}
+    <button
+      onClick={() => handleCopy(msg.content, idx)}
+      className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-white/10 transition-all"
+      title="نسخ النص"
+    >
+      {copiedIdx === idx ? (
+        <Check className="w-4 h-4 text-green-400" />
+      ) : (
+        <Copy className="w-4 h-4" />
+      )}
+    </button>
+
+    {/* زرار الصوت القديم */}
+    <button
+      onClick={() => speakResponse(msg.content)}
+      className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-white/10 transition-all"
+      title="قراءة النص صوتياً"
+    >
+      <Volume2 className="w-4 h-4" />
+    </button>
+  </div>
+)}
+
+</div>
+
                   </div>
                 ))}
                 {sendMessageMutation.isPending && (

@@ -67,6 +67,20 @@ export default function Home() {
             </span>
             متاح الآن
           </div>
+          <button
+            onClick={() => {
+              const root = document.documentElement;
+              if (root.classList.contains('dark')) {
+                root.classList.remove('dark');
+              } else {
+                root.classList.add('dark');
+              }
+            }}
+            className="px-2.5 py-1 text-xs rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/25 transition-all"
+            title="تبديل الوضع"
+          >
+            🌓
+          </button>
 
           {user ? (
             /* Logged-in avatar */
