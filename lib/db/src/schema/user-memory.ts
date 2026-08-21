@@ -1,6 +1,6 @@
 import { pgTable, text, timestamp, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 /**
  * Persistent memory facts about the user, scoped by Firebase UID.
@@ -21,9 +21,7 @@ export const userMemoryTable = pgTable(
   ]
 );
 
-export const insertUserMemorySchema = createInsertSchema(userMemoryTable).omit({
-  updatedAt: true,
-});
+export const insertUserMemorySchema = createInsertSchema(userMemoryTable);
 
 export type InsertUserMemory = z.infer<typeof insertUserMemorySchema>;
 export type UserMemory = typeof userMemoryTable.$inferSelect;

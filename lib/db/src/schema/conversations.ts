@@ -1,6 +1,6 @@
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 export const conversationsTable = pgTable("conversations", {
   id: text("id")
@@ -12,11 +12,7 @@ export const conversationsTable = pgTable("conversations", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const insertConversationSchema = createInsertSchema(conversationsTable).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
+export const insertConversationSchema = createInsertSchema(conversationsTable);
 
 export type InsertConversation = z.infer<typeof insertConversationSchema>;
 export type Conversation = typeof conversationsTable.$inferSelect;

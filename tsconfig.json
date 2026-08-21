@@ -1,16 +1,30 @@
 {
-  "extends": "./tsconfig.base.json",
-  "compileOnSave": false,
-  "files": [],
-  "references": [
-    {
-      "path": "./lib/db"
-    },
-    {
-      "path": "./lib/api-client-react"
-    },
-    {
-      "path": "./lib/api-zod"
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["vite/client", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@workspace/api-client-react": ["lib/api-client-react/src/index.ts"],
+      "@workspace/api-client-react/*": ["lib/api-client-react/src/*"],
+      "@workspace/api-zod": ["lib/api-zod/src/index.ts"],
+      "@workspace/api-zod/*": ["lib/api-zod/src/*"],
+      "@workspace/db": ["lib/db/src/index.ts"],
+      "@workspace/db/*": ["lib/db/src/*"]
     }
-  ]
+  },
+  "include": ["src", "server", "lib", "server.ts", "vite.config.ts"]
 }

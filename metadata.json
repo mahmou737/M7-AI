@@ -1,0 +1,6 @@
+{
+  "name": "M7 AI",
+  "description": "M7 AI — المساعد الذكي المتقدم بالعربية والإنجليزية مع الذاكرة الدائمة والمحادثات الصوتية",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
