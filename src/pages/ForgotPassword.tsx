@@ -1,0 +1,1 @@
+export default () => <div>Forgot Password</div>;
