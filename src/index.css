@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  font-family: "Cairo", system-ui, sans-serif;
+  color: #f8fafc;
+  background: #0b0d10;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(245, 158, 11, 0.09), transparent 30rem),
+    radial-gradient(circle at 85% 90%, rgba(14, 165, 233, 0.07), transparent 28rem),
+    #0b0d10;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+.glass {
+  background: rgba(20, 24, 30, 0.78);
+  backdrop-filter: blur(18px);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+}
