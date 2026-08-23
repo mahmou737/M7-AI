@@ -40,6 +40,17 @@ async function startServer() {
     });
   }
 
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `Port ${PORT} is already in use. Another dev server instance may still be running.`,
+      );
+    } else {
+      console.error("HTTP server error:", err);
+    }
+    process.exit(1);
+  });
+
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });

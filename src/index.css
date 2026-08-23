@@ -1,5 +1,39 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: "Cairo", system-ui, sans-serif;
+
+  --color-background: #0b0d10;
+  --color-foreground: #f8fafc;
+
+  --color-card: #14181e;
+  --color-card-foreground: #f8fafc;
+
+  --color-popover: #14181e;
+  --color-popover-foreground: #f8fafc;
+
+  --color-primary: #f59e0b;
+  --color-primary-foreground: #0b0d10;
+
+  --color-secondary: #1c222b;
+  --color-secondary-foreground: #f8fafc;
+
+  --color-muted: #1c222b;
+  --color-muted-foreground: #94a3b8;
+
+  --color-accent: #0ea5e9;
+  --color-accent-foreground: #0b0d10;
+
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #f8fafc;
+
+  --color-border: rgba(148, 163, 184, 0.14);
+  --color-input: rgba(148, 163, 184, 0.14);
+  --color-ring: #f59e0b;
+
+  --radius: 0.75rem;
+}
+
 :root {
   font-family: "Cairo", system-ui, sans-serif;
   color: #f8fafc;
