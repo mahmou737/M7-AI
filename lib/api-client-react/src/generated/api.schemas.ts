@@ -20,16 +20,27 @@ export const ChatMessageRole = {
 export interface ChatMessage {
   role: ChatMessageRole;
   content: string;
+  imageUrl?: string | null;
 }
 
 export interface ChatInput {
   messages: ChatMessage[];
   conversationId?: string | null;
+  useWebSearch?: boolean;
+  generateImage?: boolean;
+  image?: {
+    data: string;
+    mimeType: string;
+  } | null;
 }
 
 export interface ChatResponse {
   message: string;
   role: string;
+  imageUrl?: string | null;
+  isWebSearch?: boolean;
+  isImageGeneration?: boolean;
+  searchSources?: Array<{ title: string; uri: string; domain?: string }>;
 }
 
 export interface ErrorResponse {

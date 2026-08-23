@@ -22,16 +22,31 @@ export const HealthCheckResponse = zod.object({
  */
 export const SendMessageBody = zod.object({
   "messages": zod.array(zod.object({
-  "role": zod.enum(['user', 'assistant']),
-  "content": zod.string()
-})),
-  "conversationId": zod.string().nullish()
-})
+    "role": zod.enum(['user', 'assistant']),
+    "content": zod.string(),
+    "imageUrl": zod.string().optional().nullable(),
+  })),
+  "conversationId": zod.string().nullish(),
+  "useWebSearch": zod.boolean().optional(),
+  "generateImage": zod.boolean().optional(),
+  "image": zod.object({
+    "data": zod.string(),
+    "mimeType": zod.string(),
+  }).optional().nullable(),
+}).passthrough()
 
 export const SendMessageResponse = zod.object({
   "message": zod.string(),
-  "role": zod.string()
-})
+  "role": zod.string(),
+  "imageUrl": zod.string().optional().nullable(),
+  "isWebSearch": zod.boolean().optional(),
+  "isImageGeneration": zod.boolean().optional(),
+  "searchSources": zod.array(zod.object({
+    "title": zod.string(),
+    "uri": zod.string(),
+    "domain": zod.string().optional(),
+  })).optional(),
+}).passthrough()
 
 
 /**
