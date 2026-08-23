@@ -1,3 +1,4 @@
+// M7-AI root: routing, auth provider, and query client
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
