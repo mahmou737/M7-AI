@@ -13,12 +13,12 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("m7_theme") as Theme;
+      const saved = (localStorage.getItem("app-theme") || localStorage.getItem("m7_theme")) as Theme;
       if (saved === "light" || saved === "dark") {
         return saved;
       }
     }
-    return "dark";
+    return "light";
   });
 
   useEffect(() => {
@@ -29,13 +29,16 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       root.setAttribute("data-theme", "light");
       document.body.classList.remove("dark");
       document.body.classList.add("light");
+      document.body.setAttribute("data-theme", "light");
     } else {
       root.classList.remove("light");
       root.classList.add("dark");
       root.setAttribute("data-theme", "dark");
       document.body.classList.remove("light");
       document.body.classList.add("dark");
+      document.body.setAttribute("data-theme", "dark");
     }
+    localStorage.setItem("app-theme", theme);
     localStorage.setItem("m7_theme", theme);
   }, [theme]);
 

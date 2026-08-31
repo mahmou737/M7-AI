@@ -50,15 +50,36 @@ const resources = {
   }
 };
 
+const getInitialLanguage = (): string => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('i18nextLng') || localStorage.getItem('m7_lang');
+    if (saved === 'ar' || saved === 'en') {
+      return saved;
+    }
+  }
+  return 'en';
+};
+
+const initialLang = getInitialLanguage();
+
 i18n
   .use(initReactI18next)
   .init({
     resources,
-    lng: 'ar',
-    fallbackLng: 'ar',
+    lng: initialLang,
+    fallbackLng: 'en',
     interpolation: {
       escapeValue: false
     }
   });
+
+if (typeof window !== 'undefined') {
+  document.documentElement.lang = initialLang;
+  document.documentElement.dir = initialLang === 'ar' ? 'rtl' : 'ltr';
+  if (!localStorage.getItem('i18nextLng') && !localStorage.getItem('m7_lang')) {
+    localStorage.setItem('i18nextLng', 'en');
+    localStorage.setItem('m7_lang', 'en');
+  }
+}
 
 export default i18n;

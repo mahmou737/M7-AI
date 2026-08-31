@@ -14,6 +14,7 @@ export function ThemeToggle({ className, showLabel = false, isRtl = false }: The
 
   return (
     <button
+      id="theme-toggle"
       onClick={toggleTheme}
       type="button"
       className={cn(

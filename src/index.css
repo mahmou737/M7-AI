@@ -1,39 +1,67 @@
 @import "tailwindcss";
 
-@theme {
-  --color-background: #0b0d10;
-  --color-foreground: #f8fafc;
-  --color-card: #14181f;
-  --color-card-foreground: #f8fafc;
-  --color-popover: #14181f;
-  --color-popover-foreground: #f8fafc;
-  --color-primary: #f59e0b;
-  --color-primary-foreground: #0b0d10;
-  --color-secondary: #1e293b;
-  --color-secondary-foreground: #f8fafc;
-  --color-muted: #1e293b;
-  --color-muted-foreground: #94a3b8;
-  --color-accent: #f59e0b;
-  --color-accent-foreground: #0b0d10;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #ffffff;
-  --color-border: rgba(255, 255, 255, 0.1);
-  --color-input: rgba(255, 255, 255, 0.1);
-  --color-ring: #f59e0b;
-}
-
+/* الألوان في الوضع الداكن الافتراضي (Dark Mode) */
 :root {
+  --bg-primary: #0d0d0d;       /* الخلفية الأساسية سوداء */
+  --bg-card: #1e1e22;          /* خلفية الكروت رمادي غامق */
+  --text-main: #ffffff;         /* النصوص الأساسية بيضاء أو رمادي فاتح جداً */
+  --text-secondary: #a1a1aa;    /* النصوص الفرعية رمادي فاتح */
+  --border-color: #27272a;     /* لون الحدود */
+  --accent-color: #f59e0b;     /* البرتقالي البراند ثابت */
+  --ai-msg-bg: #14181f;        /* خلفية فقاعة رد الموديل */
+  --ai-msg-border: #27272a;    /* إطار فقاعة الرد */
+  --ai-msg-text: #ffffff;      /* نصوص الرد باللون الأبيض */
+  --user-msg-bg: #27272a;      /* خلفية رسالة المستخدم */
+  --user-msg-text: #ffffff;    /* نص رسالة المستخدم */
+
   font-family: "Cairo", system-ui, sans-serif;
-  color: #f8fafc;
-  background: #0b0d10;
+  color: var(--text-main);
+  background-color: var(--bg-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
 
+/* الألوان لما يتحول للوضع الفاتح (Light Mode) */
+[data-theme="light"],
 :root.light,
-body.light {
-  color: #0f172a;
-  background: #f8fafc;
+body.light,
+body[data-theme="light"] {
+  --bg-primary: #f4f4f5;       /* الخلفية الأساسية أبيض هادي */
+  --bg-card: #ffffff;          /* خلفية الكروت أبيض صريح */
+  --text-main: #09090b;         /* النصوص تنقلب لأسود داكن #09090B */
+  --text-secondary: #71717a;    /* النصوص الفرعية رمادي غامق #71717A */
+  --border-color: #e4e4e7;     /* لون الحدود فاتح #E4E4E7 */
+  --accent-color: #f59e0b;     /* لون البراند البرتقالي يفضل ثابت */
+  --ai-msg-bg: #ffffff;        /* خلفية فقاعة رد الذكاء الاصطناعي أبيض مع إطار خفيف */
+  --ai-msg-border: #e4e4e7;    /* إطار خفيف */
+  --ai-msg-text: #09090b;      /* نصوص وقوائم ورموز الرد تنقلب لأسود داكن لتباين عالي */
+  --user-msg-bg: #e4e4e7;      /* خلفية رسالة المستخدم في الفاتح */
+  --user-msg-text: #09090b;    /* نص رسالة المستخدم في الفاتح */
+
+  color: var(--text-main);
+  background-color: var(--bg-primary);
+}
+
+@theme {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-main);
+  --color-card: var(--bg-card);
+  --color-card-foreground: var(--text-main);
+  --color-popover: var(--bg-card);
+  --color-popover-foreground: var(--text-main);
+  --color-primary: #f59e0b;
+  --color-primary-foreground: #000000;
+  --color-secondary: var(--bg-card);
+  --color-secondary-foreground: var(--text-main);
+  --color-muted: var(--border-color);
+  --color-muted-foreground: var(--text-secondary);
+  --color-accent: #f59e0b;
+  --color-accent-foreground: #000000;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--border-color);
+  --color-input: var(--border-color);
+  --color-ring: #f59e0b;
 }
 
 * {
@@ -47,20 +75,25 @@ body,
   margin: 0;
 }
 
+/* تطبيق المتغيرات على صفحات التطبيق مع انسيابية كاملة */
 body {
   min-width: 320px;
-  background:
-    radial-gradient(circle at 15% 10%, rgba(245, 158, 11, 0.09), transparent 30rem),
-    radial-gradient(circle at 85% 90%, rgba(14, 165, 233, 0.07), transparent 28rem),
-    #0b0d10;
-  transition: background-color 0.25s ease, color 0.25s ease;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
 }
 
-body.light {
-  background:
-    radial-gradient(circle at 15% 10%, rgba(245, 158, 11, 0.12), transparent 30rem),
-    radial-gradient(circle at 85% 90%, rgba(14, 165, 233, 0.08), transparent 28rem),
-    #f8fafc;
+body.light,
+body[data-theme="light"] {
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+}
+
+.card {
+  background-color: var(--bg-card);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
 }
 
 button,
@@ -77,18 +110,271 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* =========================================================================
+   تصميم رسائل الذكاء الاصطناعي بنمط ChatGPT و Gemini (بدون فقاعة / No Bubble)
+   ========================================================================= */
+.ai-response-container {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  color: var(--text-main);
+  font-size: 15px;
+  line-height: 1.8;
+  width: 100%;
+}
+
+.ai-response-container p {
+  margin-bottom: 0.85em;
+}
+
+.ai-response-container p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-response-container ul,
+.ai-response-container ol {
+  margin: 0.75em 0;
+  padding-inline-start: 1.5em;
+}
+
+.ai-response-container li {
+  margin-bottom: 0.4em;
+}
+
+.ai-response-container h1,
+.ai-response-container h2,
+.ai-response-container h3,
+.ai-response-container h4 {
+  font-weight: 700;
+  color: var(--text-main);
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+}
+
+.ai-response-container h1 { font-size: 1.35em; }
+.ai-response-container h2 { font-size: 1.2em; }
+.ai-response-container h3 { font-size: 1.1em; }
+
+.ai-response-container strong,
+.ai-response-container b {
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.ai-response-container blockquote {
+  border-inline-start: 3px solid var(--accent-color);
+  padding-inline-start: 1em;
+  margin: 1em 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* =========================================================================
+   تنسيق الجداول (Markdown Tables) في الردود
+   ========================================================================= */
+.ai-response-container table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 1.25em 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  font-size: 0.92em;
+  display: table;
+}
+
+.ai-response-container thead {
+  background-color: rgba(245, 158, 11, 0.08);
+}
+
+[data-theme="light"] .ai-response-container thead,
+.light .ai-response-container thead {
+  background-color: #f1f5f9;
+}
+
+.ai-response-container th {
+  color: var(--text-main);
+  font-weight: 700;
+  padding: 10px 14px;
+  text-align: start;
+  border-bottom: 1px solid var(--border-color);
+  border-inline-end: 1px solid var(--border-color);
+}
+
+.ai-response-container th:last-child {
+  border-inline-end: none;
+}
+
+.ai-response-container td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-color);
+  border-inline-end: 1px solid var(--border-color);
+  color: var(--text-main);
+  vertical-align: middle;
+}
+
+.ai-response-container td:last-child {
+  border-inline-end: none;
+}
+
+.ai-response-container tr:last-child td {
+  border-bottom: none;
+}
+
+.ai-response-container tbody tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+[data-theme="light"] .ai-response-container tbody tr:nth-child(even),
+.light .ai-response-container tbody tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.025);
+}
+
+.ai-response-container code:not(pre code) {
+  background-color: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  padding: 0.15em 0.45em;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+[data-theme="light"] .ai-response-container code:not(pre code),
+.light .ai-response-container code:not(pre code) {
+  background-color: #f4f4f5;
+  color: #b45309;
+  border-color: #e4e4e7;
+}
+
+.ai-response-container pre {
+  margin: 1em 0;
+  border-radius: 14px;
+  background-color: #121316;
+  border: 1px solid #27272a;
+  overflow-x: auto;
+  direction: ltr !important;
+  text-align: left !important;
+}
+
+[data-theme="light"] .ai-response-container pre,
+.light .ai-response-container pre {
+  background-color: #18181b;
+  border-color: #27272a;
+  color: #f4f4f5;
+}
+
+/* فقاعة رسالة المستخدم (User Bubble) */
+.user-msg-bubble {
+  background-color: var(--user-msg-bg);
+  color: var(--user-msg-text);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 12px 18px;
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 85%;
+  word-break: break-word;
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+[data-theme="light"] .user-msg-bubble,
+.light .user-msg-bubble {
+  background-color: #f4f4f5;
+  color: #09090b;
+  border-color: #e4e4e7;
+}
+
+/* =========================================================================
+   أنيميشن ظهور النص الانسيابي وسهم الكتابة (Streaming Animation & Cursor)
+   ========================================================================= */
+@keyframes smoothMessageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-message-fade-in {
+  animation: smoothMessageFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes cursorBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.animate-streaming-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background-color: var(--accent-color);
+  vertical-align: -2px;
+  margin-inline-start: 4px;
+  border-radius: 2px;
+  animation: cursorBlink 0.8s infinite ease-in-out;
+}
+
+/* =========================================================================
+   حالات خاصة: النصوص داخل الأزرار البرتقالية تثبت باللون الأسود #000000 في كلا الوضعين
+   ========================================================================= */
+button.bg-amber-500,
+button.bg-amber-400,
+button.bg-\[\#F59E0B\],
+button.bg-\[\#f59e0b\],
+.btn-amber,
+[class*="bg-[#F59E0B]"]:not([class*="bg-[#F59E0B]/"]):is(button, a),
+[class*="bg-amber-500"]:not([class*="bg-amber-500/"]):is(button, a),
+[class*="bg-amber-400"]:not([class*="bg-amber-400/"]):is(button, a) {
+  color: #000000 !important;
+}
+
+button.bg-amber-500 *,
+button.bg-amber-400 *,
+button.bg-\[\#F59E0B\] *,
+button.bg-\[\#f59e0b\] *,
+.btn-amber *,
+[class*="bg-[#F59E0B]"]:not([class*="bg-[#F59E0B]/"]):is(button, a) *,
+[class*="bg-amber-500"]:not([class*="bg-amber-500/"]):is(button, a) *,
+[class*="bg-amber-400"]:not([class*="bg-amber-400/"]):is(button, a) * {
+  color: #000000 !important;
+}
+
+/* شريط الإدخال المنحني */
+.input-area {
+  background-color: var(--bg-card);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  border-radius: 30px;
+  padding: 8px 15px;
+  display: flex;
+  align-items: center;
+  margin: 15px;
+}
+
 .glass {
-  background: rgba(20, 24, 30, 0.78);
+  background: rgba(18, 18, 18, 0.88);
   backdrop-filter: blur(18px);
 }
 
+[data-theme="light"] .glass,
 .light .glass {
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(18px);
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -96,11 +382,12 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.2);
   border-radius: 999px;
 }
 
+[data-theme="light"] ::-webkit-scrollbar-thumb,
 .light ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.25);
 }
 

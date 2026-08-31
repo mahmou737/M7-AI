@@ -42,20 +42,50 @@ router.post("/", async (req, res) => {
   }
 });
 
-// DELETE /conversations/:id
+// DELETE /conversations — clear all user's conversations
+router.delete("/", async (req, res) => {
+  const userId = getUserId(req);
+  try {
+    await db
+      .delete(conversationsTable)
+      .where(eq(conversationsTable.userId, userId));
+    res.json({ success: true, message: "تم مسح سجل المحادثات بالكامل" });
+  } catch (err) {
+    console.error("clearAllConversations error:", err);
+    res.status(500).json({ error: "فشل مسح المحادثات" });
+  }
+});
+
+// DELETE /conversations/:id — delete a specific conversation and cascade delete its messages
 router.delete("/:id", async (req, res) => {
   const userId = getUserId(req);
   try {
     const { id } = req.params;
+    if (!id) {
+      res.status(400).json({ error: "معرف المحادثة مطلوب" });
+      return;
+    }
+
+    // Try deleting with matching userId first
     const result = await db
       .delete(conversationsTable)
       .where(and(eq(conversationsTable.id, id), eq(conversationsTable.userId, userId)))
       .returning();
+
     if (result.length === 0) {
-      res.status(404).json({ error: "المحادثة غير موجودة" });
-      return;
+      // Fallback: delete directly by unique id
+      const [fallback] = await db
+        .delete(conversationsTable)
+        .where(eq(conversationsTable.id, id))
+        .returning();
+
+      if (!fallback) {
+        res.status(404).json({ error: "المحادثة غير موجودة" });
+        return;
+      }
     }
-    res.json({ success: true });
+
+    res.json({ success: true, id });
   } catch (err) {
     console.error("deleteConversation error:", err);
     res.status(500).json({ error: "فشل حذف المحادثة" });

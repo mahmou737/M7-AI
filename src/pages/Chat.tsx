@@ -1,13 +1,14 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  ArrowRight,
-  ArrowLeft,
   Send,
   Loader2,
+  Square,
   Plus,
   MessageSquare,
   Trash2,
@@ -23,18 +24,25 @@ import {
   Copy,
   Check,
   Search,
-  Sparkles,
   Home,
-  Bot,
   Globe,
+  Link2,
   ExternalLink,
   RotateCcw,
-  Image as ImageIcon,
   ImagePlus,
   Paperclip,
+  Camera,
+  Sparkles,
+  ArrowUpRight,
   Download,
   Maximize2,
   Paintbrush,
+  Edit2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  History,
+  Clock,
+  Calendar,
 } from "lucide-react";
 import {
   useSendMessage,
@@ -51,15 +59,22 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "react-i18next";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import {
+  checkAndEnforceSessionLifecycle,
+  recordUserActivity,
+  performFullAppCacheClean,
+} from "@/lib/sessionManager";
+import {
+  getStoredChats,
+  getStoredChatById,
+  saveStoredChat,
+  deleteStoredChatById,
+  updateStoredChatTitle,
+  ChatMessageItem,
+  StoredChat,
+} from "@/lib/chatStore";
 
-interface ChatMessageItem {
-  role: "user" | "assistant";
-  content: string;
-  imageUrl?: string | null;
-  isWebSearch?: boolean;
-  isImageGeneration?: boolean;
-  searchSources?: Array<{ title: string; uri: string; domain?: string }>;
-}
+// ChatMessageItem imported from chatStore
 
 interface AttachedImage {
   data: string;
@@ -107,15 +122,655 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
 }
 
-function formatDate(dateStr: string, isRtl: boolean) {
-  if (!dateStr) return "";
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000);
-  if (diffDays === 0) return isRtl ? "اليوم" : "Today";
-  if (diffDays === 1) return isRtl ? "أمس" : "Yesterday";
-  return date.toLocaleDateString(isRtl ? "ar-SA" : "en-US", { month: "short", day: "numeric" });
+/**
+ * كاشف ذكي للغة النص المولد (عربي، إنجليزي، فرنسي، إسباني، ألماني، إلخ) لتحويل النص إلى صوت ديناميكياً
+ */
+function detectSpokenLanguage(text: string): string {
+  if (!text) return "ar-SA";
+
+  const clean = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[\p{Emoji}\p{Extended_Pictographic}]/gu, "")
+    .trim();
+
+  // فحص الأحرف العربية
+  const arabicMatches = clean.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g);
+  const arabicCount = arabicMatches ? arabicMatches.length : 0;
+
+  // فحص الأحرف الإنجليزية / اللاتينية
+  const latinMatches = clean.match(/[a-zA-Z]/g);
+  const latinCount = latinMatches ? latinMatches.length : 0;
+
+  // لغات أخرى شائعة
+  const frenchMatches = clean.match(/[éèêëàâçîïôûùüœæ]/gi);
+  const germanMatches = clean.match(/[äöüß]/gi);
+  const spanishMatches = clean.match(/[ñáéíóú¿¡]/gi);
+  const cyrillicMatches = clean.match(/[\u0400-\u04FF]/g);
+
+  if (arabicCount >= 3 && (latinCount === 0 || arabicCount >= latinCount * 0.35)) {
+    return "ar-SA";
+  }
+
+  if (cyrillicMatches && cyrillicMatches.length > 5 && cyrillicMatches.length > latinCount) {
+    return "ru-RU";
+  }
+
+  if (frenchMatches && frenchMatches.length >= 3) {
+    return "fr-FR";
+  }
+
+  if (germanMatches && germanMatches.length >= 3) {
+    return "de-DE";
+  }
+
+  if (spanishMatches && spanishMatches.length >= 3) {
+    return "es-ES";
+  }
+
+  if (latinCount > 0) {
+    return "en-US";
+  }
+
+  return "ar-SA";
 }
+
+/**
+ * تنظيف النص من علامات الماركداون والرموز البرمجية قبل القراءة الصوتية لضمان نطق فصيح وطبيعي
+ */
+function cleanTextForSpeech(rawText: string): string {
+  return rawText
+    .replace(/```[\s\S]*?```/g, " كود برمجي ")
+    .replace(/`[^`]*`/g, "")
+    .replace(/<M7[^>]*>[\s\S]*?<\/M7[^>]*>/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\|[^\n]+\|/g, "")
+    .replace(/[#*`_~>\-•[\]()]/g, " ")
+    .replace(/[\p{Emoji}\p{Extended_Pictographic}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseRelativeTime(dateStr: string, isRtl: boolean): string {
+  if (!dateStr) return "";
+  try {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return isRtl ? "الآن" : "Just now";
+    if (diffMins < 60) return isRtl ? `منذ ${diffMins} د` : `${diffMins}m ago`;
+    if (diffHours < 24) return isRtl ? `منذ ${diffHours} س` : `${diffHours}h ago`;
+    if (diffDays === 1) return isRtl ? "أمس" : "Yesterday";
+    if (diffDays < 7) return isRtl ? `منذ ${diffDays} أيام` : `${diffDays}d ago`;
+    return date.toLocaleDateString(isRtl ? "ar-SA" : "en-US", { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function CodeBlock({ children, className, ...props }: any) {
+  const match = /language-(\w+)/.exec(className || "");
+  const lang = match ? match[1] : "";
+  const codeString = String(children).replace(/\n$/, "");
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!match && !codeString.includes("\n")) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  return (
+    <div className="relative my-3 rounded-xl overflow-hidden border border-[var(--border-color)] bg-[#121316] text-[#f4f4f5] text-xs shadow-md" dir="ltr">
+      <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#1a1b1e] border-b border-[var(--border-color)] text-[11px] text-zinc-400">
+        <span className="font-mono uppercase font-bold text-amber-500">{lang || "code"}</span>
+        <button
+          type="button"
+          onClick={handleCopyCode}
+          className="flex items-center gap-1 hover:text-white transition-colors py-1 px-2 rounded-lg hover:bg-white/10"
+        >
+          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+      <pre className="p-3.5 overflow-x-auto font-mono text-[13px] leading-relaxed">
+        <code>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
+const StreamableContent = memo(function StreamableContent({
+  content,
+  isLatestAssistant,
+  isGenerating,
+  isRtl,
+}: {
+  content: string;
+  isLatestAssistant: boolean;
+  isGenerating: boolean;
+  isRtl: boolean;
+}) {
+  const [displayedLength, setDisplayedLength] = useState(() => (isLatestAssistant && isGenerating ? Math.min(20, content.length) : content.length));
+
+  useEffect(() => {
+    if (!isLatestAssistant || !isGenerating) {
+      setDisplayedLength(content.length);
+      return;
+    }
+
+    if (displayedLength < content.length) {
+      const remaining = content.length - displayedLength;
+      const step = Math.max(2, Math.min(15, Math.ceil(remaining / 6)));
+      const timer = setTimeout(() => {
+        setDisplayedLength((prev) => Math.min(content.length, prev + step));
+      }, 20);
+      return () => clearTimeout(timer);
+    }
+  }, [content.length, displayedLength, isLatestAssistant, isGenerating]);
+
+  const visibleText = isLatestAssistant && isGenerating ? content.slice(0, displayedLength) : content;
+  const isStreaming = isLatestAssistant && isGenerating && displayedLength < content.length;
+
+  return (
+    <div className="ai-response-container text-start" dir={isRtl ? "rtl" : "ltr"}>
+      <Markdown remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
+        {visibleText}
+      </Markdown>
+      {isStreaming && <span className="animate-streaming-cursor" />}
+    </div>
+  );
+});
+
+/**
+ * مكون لعرض رسالة المحادثة بنمط ChatGPT / Gemini (بدون فقاعة للمساعد، وأنيميشن ناعم، ودعم كامل للغتين)
+ */
+const ChatMessageCard = memo(function ChatMessageCard({
+  msg,
+  idx,
+  isRtl,
+  isCopied,
+  copiedSourceUri,
+  isLatestAssistant,
+  isGenerating,
+  onCopyText,
+  onSpeak,
+  onSelectSuggestion,
+  onRetry,
+  onOpenImageModal,
+  onCopySource,
+}: {
+  msg: ChatMessageItem;
+  idx: number;
+  isRtl: boolean;
+  isCopied: boolean;
+  copiedSourceUri: string | null;
+  isLatestAssistant: boolean;
+  isGenerating: boolean;
+  onCopyText: (text: string, idx: number) => void;
+  onSpeak: (text: string) => void;
+  onSelectSuggestion?: (suggestion: string) => void;
+  onRetry?: () => void;
+  onOpenImageModal: (url: string) => void;
+  onCopySource: (uri: string, e: React.MouseEvent) => void;
+}) {
+  if (msg.role === "user") {
+    return (
+      <div className="flex w-full justify-end animate-message-fade-in" dir={isRtl ? "rtl" : "ltr"}>
+        <div className="user-msg-bubble shadow-sm flex flex-col gap-2">
+          {/* User Attached Image */}
+          {msg.imageUrl && (
+            <div className="overflow-hidden rounded-xl border border-white/10 max-w-xs mb-1">
+              <img
+                src={msg.imageUrl}
+                alt="User upload"
+                referrerPolicy="no-referrer"
+                className="w-full h-auto max-h-60 object-cover cursor-pointer hover:scale-[1.02] transition-transform rounded-xl"
+                onClick={() => onOpenImageModal(msg.imageUrl!)}
+              />
+            </div>
+          )}
+          <div className="whitespace-pre-wrap text-start text-sm sm:text-[15px] font-medium leading-relaxed">
+            {msg.content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Assistant Message (ChatGPT / Gemini Style - No Message Bubble)
+  return (
+    <div className="flex flex-col w-full animate-message-fade-in py-2" dir={isRtl ? "rtl" : "ltr"}>
+      {/* Header / Avatar indicator */}
+      <div className="flex items-center gap-2.5 mb-2.5">
+        <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 text-black flex items-center justify-center font-black text-xs shadow-md shadow-amber-500/20 flex-shrink-0">
+          M7
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-bold text-xs sm:text-sm text-[var(--text-main)]">
+            M7 AI
+          </span>
+
+          {/* Web search badge */}
+          {msg.isWebSearch && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
+              <Globe className="w-3 h-3 text-amber-500" />
+              <span>{isRtl ? "بحث ويب حي 🌐" : "Live Search 🌐"}</span>
+            </span>
+          )}
+
+          {/* Generated Image badge */}
+          {(msg.isImageGeneration || msg.imageUrl) && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
+              <Paintbrush className="w-3 h-3 text-amber-500" />
+              <span>{isRtl ? "توليد صورة فنية 🎨" : "AI Artwork 🎨"}</span>
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Generated Image if any */}
+      {msg.imageUrl && (
+        <div className="mb-3 overflow-hidden rounded-2xl border border-[var(--border-color)] relative group/img max-w-md shadow-lg">
+          <img
+            src={msg.imageUrl}
+            alt="AI Generated"
+            referrerPolicy="no-referrer"
+            className="w-full h-auto max-h-80 object-cover cursor-pointer hover:scale-[1.02] transition-transform duration-300 rounded-2xl"
+            onClick={() => onOpenImageModal(msg.imageUrl!)}
+          />
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
+            <button
+              type="button"
+              onClick={() => onOpenImageModal(msg.imageUrl!)}
+              className="p-2.5 rounded-xl bg-black/70 hover:bg-amber-500 hover:text-black text-white transition-all shadow-md"
+              title={isRtl ? "عرض بحجم كامل" : "View Fullscreen"}
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+            <a
+              href={msg.imageUrl}
+              download={`m7-image-${Date.now()}.png`}
+              target="_blank"
+              rel="noreferrer"
+              className="p-2.5 rounded-xl bg-black/70 hover:bg-amber-500 hover:text-black text-white transition-all shadow-md"
+              title={isRtl ? "تحميل الصورة" : "Download Image"}
+            >
+              <Download className="w-4 h-4" />
+            </a>
+          </div>
+        </div>
+      )}
+
+      {/* Main Text Content without any Bubble Container */}
+      <div className="w-full">
+        <StreamableContent
+          content={msg.content}
+          isLatestAssistant={isLatestAssistant}
+          isGenerating={isGenerating}
+          isRtl={isRtl}
+        />
+      </div>
+
+      {/* Interactive Quick Reply Suggestion Chips */}
+      {msg.suggestions && msg.suggestions.length > 0 && !isGenerating && (
+        <div className="mt-3.5 pt-2 flex flex-col gap-2 text-start animate-in fade-in slide-in-from-bottom-1 duration-300" dir={isRtl ? "rtl" : "ltr"}>
+          <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-500">
+            <Sparkles className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+            <span>{isRtl ? "اقتراحات سريعة للمتابعة:" : "Quick Follow-up Suggestions:"}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {msg.suggestions.map((suggestion, sIdx) => (
+              <button
+                key={sIdx}
+                type="button"
+                onClick={() => onSelectSuggestion?.(suggestion)}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-[var(--bg-card)] hover:bg-amber-500/15 text-[var(--text-main)] hover:text-amber-600 dark:hover:text-amber-400 border border-[var(--border-color)] hover:border-amber-500/50 shadow-sm transition-all duration-200 cursor-pointer hover:scale-[1.02] active:scale-[0.98] group text-start"
+              >
+                <span className="leading-snug">{suggestion}</span>
+                <ArrowUpRight className="w-3.5 h-3.5 text-amber-500/70 group-hover:text-amber-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 rtl:group-hover:-translate-x-0.5 transition-transform flex-shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Web Search Sources */}
+      {msg.searchSources && msg.searchSources.length > 0 && (
+        <div className="mt-4 pt-3.5 border-t border-[var(--border-color)] text-start" dir={isRtl ? "rtl" : "ltr"}>
+          <div className="flex items-center justify-between gap-2 mb-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-500">
+              <Globe className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+              <span>{isRtl ? "المصادر والمراجع الأصلية الموثقة من الويب:" : "Verified Original Web Sources & Links:"}</span>
+            </div>
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-500 border border-amber-500/30">
+              {msg.searchSources.length} {isRtl ? "مصادر" : "sources"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {msg.searchSources.map((src, sIdx) => {
+              const isSrcCopied = copiedSourceUri === src.uri;
+              return (
+                <div
+                  key={sIdx}
+                  className="p-2.5 rounded-xl bg-[var(--bg-card)] hover:bg-amber-500/5 border border-[var(--border-color)] hover:border-amber-500/40 transition-all text-xs group/src flex flex-col gap-1.5 shadow-sm"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30 flex items-center gap-0.5">
+                        <Globe className="w-2.5 h-2.5 text-amber-500" />
+                        {(src as any).domain || "web"}
+                      </span>
+                      <span className="font-semibold text-[var(--text-main)] truncate text-[11px]">
+                        {src.title || (src as any).domain || (isRtl ? "مصدر الويب" : "Web Source")}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => onCopySource(src.uri, e)}
+                        className={cn(
+                          "p-1 rounded-md border transition-all flex items-center gap-1 text-[9px] font-medium",
+                          isSrcCopied
+                            ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40"
+                            : "bg-[var(--bg-primary)] hover:bg-amber-500/20 text-[var(--text-secondary)] hover:text-amber-500 border-[var(--border-color)]"
+                        )}
+                        title={isRtl ? "نسخ الرابط" : "Copy Link"}
+                      >
+                        {isSrcCopied ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-500" />
+                            <span>{isRtl ? "تم" : "Copied"}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>{isRtl ? "نسخ" : "Copy"}</span>
+                          </>
+                        )}
+                      </button>
+
+                      <a
+                        href={src.uri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 rounded-md bg-amber-500/10 hover:bg-amber-500 text-amber-600 dark:text-amber-400 hover:text-black border border-amber-500/30 transition-all flex items-center gap-1 text-[9px] font-semibold"
+                        title={isRtl ? "فتح المصدر في نافذة جديدة" : "Open Source Link"}
+                      >
+                        <span>{isRtl ? "زيارة" : "Visit"}</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+                  </div>
+
+                  <a
+                    href={src.uri}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-black/5 dark:bg-black/40 border border-[var(--border-color)] text-amber-600 dark:text-amber-300 font-mono text-[10px] truncate dir-ltr transition-colors"
+                    title={src.uri}
+                  >
+                    <Link2 className="w-3 h-3 text-amber-500 flex-shrink-0" />
+                    <span className="truncate flex-1">{src.uri}</span>
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Assistant Action Buttons (ChatGPT/Gemini Style below the text) */}
+      <div className="flex items-center gap-1.5 mt-3 pt-1 text-start" dir={isRtl ? "rtl" : "ltr"}>
+        {msg.content.startsWith("⚠️") && onRetry && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-500 hover:bg-amber-500 hover:text-black transition-all shadow-sm"
+            title={isRtl ? "إعادة المحاولة فوراً" : "Retry now"}
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span className="text-[11px]">{isRtl ? "إعادة المحاولة" : "Retry"}</span>
+          </button>
+        )}
+
+        <button
+          onClick={() => onCopyText(msg.content, idx)}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/5 border border-transparent hover:border-[var(--border-color)] transition-all"
+          title={isRtl ? "نسخ الرد" : "Copy response"}
+        >
+          {isCopied ? (
+            <>
+              <Check className="w-3.5 h-3.5 text-emerald-500" />
+              <span className="text-[11px] text-emerald-500 font-semibold">{isRtl ? "تم النسخ" : "Copied"}</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              <span className="text-[11px] hidden sm:inline">{isRtl ? "نسخ" : "Copy"}</span>
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={() => onSpeak(msg.content)}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/5 border border-transparent hover:border-[var(--border-color)] transition-all"
+          title={isRtl ? "قراءة صوتية" : "Listen audio"}
+        >
+          <Volume2 className="w-3.5 h-3.5" />
+          <span className="text-[11px] hidden sm:inline">{isRtl ? "استماع" : "Listen"}</span>
+        </button>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * مكون Loading State التفاعلي والمتطور (حل البطء والتعليق وإظهار خطوات المعالجة والوقت الحي)
+ */
+const LoadingStateCard = memo(function LoadingStateCard({
+  isPendingWebSearch,
+  imageGenMode,
+  isRtl,
+  onStop,
+}: {
+  isPendingWebSearch: boolean;
+  imageGenMode: boolean;
+  isRtl: boolean;
+  onStop: () => void;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setElapsed((prev) => +(prev + 0.1).toFixed(1));
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="flex w-full justify-end animate-in fade-in slide-in-from-bottom-2 duration-300">
+      {isPendingWebSearch ? (
+        <div className="bg-[var(--bg-card)] p-4 sm:p-5 rounded-2xl rounded-tl-sm flex flex-col gap-3 border border-amber-500/40 shadow-xl shadow-amber-500/10 max-w-md w-full text-right">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 text-black flex items-center justify-center flex-shrink-0 animate-pulse shadow-md shadow-amber-500/20">
+              <Globe className="w-5 h-5 animate-spin duration-1000" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-amber-500 light:text-amber-700 flex items-center gap-1.5">
+                  <Search className="w-3.5 h-3.5 text-amber-500" />
+                  {isRtl ? "جاري البحث الحي المباشر (Google Search)" : "Live Web Grounding Search"}
+                </span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-300 light:bg-amber-100 light:text-amber-800">
+                  {elapsed}s
+                </span>
+              </div>
+
+              {/* Dynamic Step Status */}
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-medium text-[var(--text-main)]">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping flex-shrink-0" />
+                  <span>
+                    {elapsed < 1.8
+                      ? isRtl
+                        ? "1. الاتصال المباشر بمحرك البحث وتدقيق الاستعلام..."
+                        : "1. Connecting to live search engine..."
+                      : elapsed < 3.8
+                      ? isRtl
+                        ? "2. استخراج المصادر الموثقة وفحص أحدث المقالات..."
+                        : "2. Extracting verified sources and recent articles..."
+                      : isRtl
+                      ? "3. صياغة وتنسيق الخلاصة الذكية باللغة العربية الفصحى..."
+                      : "3. Synthesizing articulate factual summary..."}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-between justify-between pt-2 border-t border-[var(--border-color)] text-[11px]">
+            <span className="text-[var(--text-secondary)] flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              {isRtl ? "محرك M7 للبحث الحي المباشر" : "M7 Real-time Grounding"}
+            </span>
+            <button
+              type="button"
+              onClick={onStop}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-500 dark:text-red-400 font-bold transition-colors cursor-pointer text-[11px]"
+              title={isRtl ? "إيقاف البحث والرد" : "Stop search"}
+            >
+              <Square className="w-2.5 h-2.5 fill-current" />
+              <span>{isRtl ? "إيقاف ⏹️" : "Stop ⏹️"}</span>
+            </button>
+          </div>
+        </div>
+      ) : imageGenMode ? (
+        <div className="bg-[var(--bg-card)] p-4 sm:p-5 rounded-2xl rounded-tl-sm flex flex-col gap-3 border border-amber-500/40 shadow-xl shadow-amber-500/10 max-w-md w-full text-right">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 text-black flex items-center justify-center flex-shrink-0 animate-bounce shadow-md shadow-amber-500/20">
+              <Paintbrush className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-amber-500 light:text-amber-700 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  {isRtl ? "توليد صورة فنية فائقة الدقة (FLUX 8K)" : "Generating 8K AI Artwork"}
+                </span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-300 light:bg-amber-100 light:text-amber-800">
+                  {elapsed}s
+                </span>
+              </div>
+
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-medium text-[var(--text-main)]">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping flex-shrink-0" />
+                  <span>
+                    {elapsed < 2.0
+                      ? isRtl
+                        ? "1. تحسين وصياغة الـ Prompt الهندسي بالإنجليزية..."
+                        : "1. Engineering high-detail visual prompt..."
+                      : elapsed < 4.5
+                      ? isRtl
+                        ? "2. معالجة وتوليد الصورة بمحرك FLUX بدقة 1024x1024..."
+                        : "2. Rendering with FLUX diffusion engine..."
+                      : isRtl
+                      ? "3. تطبيق الإضاءة السينمائية والتفاصيل الواقعية 8K..."
+                      : "3. Applying photorealistic lighting & 8K details..."}
+                  </span>
+                </div>
+              </div>
+
+              {/* Quality Badges */}
+              <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
+                <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[10px] font-semibold text-amber-600 dark:text-amber-300 light:text-amber-700">
+                  FLUX.1 Diffusion
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[10px] font-semibold text-amber-600 dark:text-amber-300 light:text-amber-700">
+                  8K Ultra HD
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[10px] font-semibold text-amber-600 dark:text-amber-300 light:text-amber-700">
+                  Photorealistic
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-1 border-t border-[var(--border-color)]">
+            <button
+              type="button"
+              onClick={onStop}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-500 dark:text-red-400 font-bold transition-colors cursor-pointer text-[11px]"
+              title={isRtl ? "إيقاف توليد الصورة" : "Stop generating"}
+            >
+              <Square className="w-2.5 h-2.5 fill-current" />
+              <span>{isRtl ? "إيقاف التوليد ⏹️" : "Stop ⏹️"}</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-[var(--bg-card)] p-4 sm:p-5 rounded-2xl rounded-tl-sm flex flex-col gap-2.5 border border-[var(--border-color)] shadow-xl max-w-sm w-full text-right">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-xl bg-amber-500/20 text-amber-500 flex items-center justify-center animate-pulse">
+                <Brain className="w-4 h-4" />
+              </div>
+              <span className="text-xs font-bold text-[var(--text-main)]">
+                {isRtl ? "M7 AI يفكر ويصيغ الرد الذكي 🧠..." : "M7 AI is thinking and formulating..."}
+              </span>
+            </div>
+            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-[var(--text-secondary)]">
+              {elapsed}s
+            </span>
+          </div>
+
+          {/* Skeleton Pulse Lines */}
+          <div className="space-y-2 py-1">
+            <div className="h-2 bg-gradient-to-r from-amber-500/20 via-amber-400/40 to-amber-500/10 rounded-full animate-pulse w-5/6 mr-auto" />
+            <div className="h-2 bg-gradient-to-r from-amber-500/10 via-amber-400/30 to-amber-500/20 rounded-full animate-pulse w-full" />
+            <div className="h-2 bg-gradient-to-r from-amber-500/20 via-amber-400/40 to-amber-500/10 rounded-full animate-pulse w-3/4 mr-auto" />
+          </div>
+
+          <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)] text-[10px]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
+              <span className="text-[var(--text-secondary)]">
+                {isRtl ? "عربية فصحى معاصرة" : "Modern Standard Arabic"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={onStop}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-500 dark:text-red-400 font-semibold transition-colors cursor-pointer text-[10px]"
+              title={isRtl ? "إيقاف توليد الرد" : "Stop"}
+            >
+              <Square className="w-2.5 h-2.5 fill-current" />
+              <span>{isRtl ? "إيقاف" : "Stop"}</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+// Using chatStore functions ({ id, title, messages }) directly
 
 export default function Chat() {
   const { id: conversationId } = useParams<{ id?: string }>();
@@ -130,13 +785,69 @@ export default function Chat() {
     const newLang = isRtl ? "en" : "ar";
     i18n.changeLanguage(newLang);
     document.dir = newLang === "ar" ? "rtl" : "ltr";
+    document.documentElement.lang = newLang;
+    localStorage.setItem("i18nextLng", newLang);
+    localStorage.setItem("m7_lang", newLang);
   };
 
   useEffect(() => {
     document.dir = isRtl ? "rtl" : "ltr";
+    document.documentElement.lang = isRtl ? "ar" : "en";
   }, [isRtl]);
 
-  const [messages, setMessages] = useState<ChatMessageItem[]>([]);
+  const [chats, setChats] = useState<StoredChat[]>(() => getStoredChats());
+  const [activeChatId, setActiveChatId] = useState<string>(() => {
+    const all = getStoredChats();
+    if (all.length > 0) return all[0].id;
+    const newId = "chat_" + Date.now();
+    saveStoredChat(newId, [], "محادثة جديدة");
+    return newId;
+  });
+
+  useEffect(() => {
+    if (conversationId) {
+      setActiveChatId(conversationId);
+      if (!getStoredChatById(conversationId)) {
+        saveStoredChat(conversationId, [], "محادثة جديدة");
+        setChats(getStoredChats());
+      }
+    } else {
+      const all = getStoredChats();
+      if (all.length > 0) {
+        setActiveChatId(all[0].id);
+        navigate(`/chat/${all[0].id}`, { replace: true });
+      } else {
+        const newId = "chat_" + Date.now();
+        saveStoredChat(newId, [], "محادثة جديدة");
+        setChats(getStoredChats());
+        setActiveChatId(newId);
+        navigate(`/chat/${newId}`, { replace: true });
+      }
+    }
+  }, [conversationId, navigate]);
+
+  const activeChat = getStoredChatById(activeChatId) || chats.find((c) => c.id === activeChatId) || {
+    id: activeChatId,
+    title: "محادثة جديدة",
+    messages: [],
+    updatedAt: new Date().toISOString(),
+  };
+  const messages = activeChat.messages;
+
+  const setMessages = (action: ChatMessageItem[] | ((prev: ChatMessageItem[]) => ChatMessageItem[])) => {
+    const currentMessages = activeChat.messages || [];
+    const nextMessages = typeof action === "function" ? action(currentMessages) : action;
+    const title = nextMessages.length > 0 ? (nextMessages[0].content.slice(0, 30) || "محادثة جديدة") : activeChat.title;
+    const updated = saveStoredChat(activeChatId, nextMessages, title);
+    setChats(updated);
+  };
+
+  const conversations = chats.map((c) => ({
+    id: c.id,
+    title: c.title,
+    createdAt: c.updatedAt,
+    updatedAt: c.updatedAt,
+  }));
   const [inputValue, setInputValue] = useState("");
   const [webSearchMode, setWebSearchMode] = useState(false);
   const [imageGenMode, setImageGenMode] = useState(false);
@@ -145,20 +856,60 @@ export default function Chat() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isPendingWebSearch, setIsPendingWebSearch] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-  const [memoryExpanded, setMemoryExpanded] = useState(true);
+  const [memoryExpanded, setMemoryExpanded] = useState(false);
   const [deletingConvId, setDeletingConvId] = useState<string | null>(null);
+  const [editingConvId, setEditingConvId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isClearingAll, setIsClearingAll] = useState(false);
+  const [isCleaningCache, setIsCleaningCache] = useState(false);
   const [deletingMemKey, setDeletingMemKey] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speechError, setSpeechError] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [copiedSourceUri, setCopiedSourceUri] = useState<string | null>(null);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close Action Menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(e.target as Node)) {
+        setActionMenuOpen(false);
+      }
+    };
+    if (actionMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("touchstart", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
+  }, [actionMenuOpen]);
+
+  const handleCopySource = (uri: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(uri);
+    setCopiedSourceUri(uri);
+    setTimeout(() => {
+      setCopiedSourceUri(null);
+    }, 2000);
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const voiceTranscriptRef = useRef("");
   const initialPromptHandledRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputFieldRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const SUGGESTIONS = isRtl
     ? [
@@ -187,40 +938,166 @@ export default function Chat() {
   const deleteConversation = useDeleteConversation();
   const deleteMemoryMutation = useDeleteMemory();
 
-  // ── Load history with <M7IMAGE> parsing ─────────────────────────────────
+  // ── Smart Session & Lifecycle Management (التعامل مع التبديل السريع ومهلة الخمول وتنظيف الذاكرة) ──
   useEffect(() => {
-    if (history.data && conversationId) {
-      setMessages(
-        history.data.map((m) => {
+    // 1. فحص مهلة الخمول وانتهاء الجلسة عند فتح التطبيق
+    const { hasReset } = checkAndEnforceSessionLifecycle();
+    if (hasReset && !conversationId) {
+      setMessages([]);
+    }
+
+    // 2. تتبع نشاط المستخدم للحفاظ على الشات الحالي أثناء الاستخدام
+    const onUserActive = () => {
+      recordUserActivity();
+    };
+
+    window.addEventListener("pointerdown", onUserActive);
+    window.addEventListener("keydown", onUserActive);
+    window.addEventListener("touchstart", onUserActive);
+
+    // 3. التعامل مع التبديل السريع والتنقل بين التطبيقات (App Switching / Visibility Change)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // عند عودة المستخدم للتطبيق: التحقق مما إذا كانت فترة الغياب تجاوزت مهلة الخمول (Timeout)
+        const { hasReset: expired } = checkAndEnforceSessionLifecycle();
+        if (expired) {
+          setMessages([]);
+          if (conversationId) {
+            navigate("/chat");
+          }
+        } else {
+          // غياب قصير (تبديل تطبيقات أو قفل مؤقت): تسجيل استمرار النشاط للحفاظ على الشات كاملاً
+          recordUserActivity();
+        }
+      } else {
+        // خروج مؤقت للخلفية: تسجيل وقت الخروج بدقة
+        recordUserActivity();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pointerdown", onUserActive);
+      window.removeEventListener("keydown", onUserActive);
+      window.removeEventListener("touchstart", onUserActive);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [conversationId, navigate]);
+
+  // ── LocalStorage caching for fast offline/instant load ───────────────────
+  useEffect(() => {
+    if (convs.data && convs.data.length > 0) {
+      try {
+        localStorage.setItem("m7_cached_conversations", JSON.stringify(convs.data));
+      } catch {}
+    }
+  }, [convs.data]);
+
+  // ── Auto-save messages to independent chat store ─────────────────────────────
+  useEffect(() => {
+    if (messages.length > 0 && conversationId) {
+      saveStoredChat(conversationId, messages);
+      try {
+        localStorage.setItem(`m7_cached_messages_${conversationId}`, JSON.stringify(messages));
+      } catch (err) {
+        console.warn("Failed to auto-save chat messages:", err);
+      }
+    }
+  }, [messages, conversationId]);
+
+  // ── Load history with <M7IMAGE> parsing + chatStore fallback ───────────────
+  useEffect(() => {
+    if (conversationId) {
+      // 1. Fast optimistic load from stored chats array
+      const stored = getStoredChatById(conversationId);
+      const cached = localStorage.getItem(`m7_cached_messages_${conversationId}`);
+      if (stored && stored.messages && stored.messages.length > 0 && (!history.data || history.data.length === 0)) {
+        setMessages(stored.messages);
+      } else if (cached && (!history.data || history.data.length === 0)) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setMessages(parsed);
+          }
+        } catch {}
+      }
+
+      // 2. Hydrate from server database history if loaded
+      if (history.data) {
+        const loaded: ChatMessageItem[] = history.data.map((m) => {
           let content = m.content;
           let imageUrl: string | null = null;
-          const match = content.match(/<M7IMAGE>([\s\S]*?)<\/M7IMAGE>/);
-          if (match) {
+          let searchSources: Array<{ title: string; uri: string; domain?: string }> | undefined = undefined;
+          let suggestions: string[] | undefined = undefined;
+          let isWebSearch = false;
+
+          const matchSuggestions = content.match(/<M7SUGGESTIONS>([\s\S]*?)<\/M7SUGGESTIONS>/);
+          if (matchSuggestions) {
             try {
-              const parsed = JSON.parse(match[1]);
+              const parsed = JSON.parse(matchSuggestions[1]);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                suggestions = parsed;
+                content = content.replace(/<M7SUGGESTIONS>[\s\S]*?<\/M7SUGGESTIONS>/g, "").trim();
+              }
+            } catch {}
+          }
+
+          const matchImg = content.match(/<M7IMAGE>([\s\S]*?)<\/M7IMAGE>/);
+          if (matchImg) {
+            try {
+              const parsed = JSON.parse(matchImg[1]);
               if (parsed.url) {
                 imageUrl = parsed.url;
                 content = content.replace(/<M7IMAGE>[\s\S]*?<\/M7IMAGE>/g, "").trim();
               }
             } catch {}
           }
+
+          const matchSources = content.match(/<M7SOURCES>([\s\S]*?)<\/M7SOURCES>/);
+          if (matchSources) {
+            try {
+              const parsed = JSON.parse(matchSources[1]);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                searchSources = parsed;
+                isWebSearch = true;
+                content = content.replace(/<M7SOURCES>[\s\S]*?<\/M7SOURCES>/g, "").trim();
+              }
+            } catch {}
+          }
+
           return {
             role: m.role as "user" | "assistant",
             content,
             imageUrl,
+            searchSources,
+            isWebSearch,
+            suggestions,
           };
-        })
-      );
-    } else if (!conversationId) {
+        });
+
+        if (loaded.length > 0) {
+          const stored = getStoredChatById(conversationId);
+          if (!stored || loaded.length >= (stored.messages?.length || 0)) {
+            setMessages(loaded);
+            saveStoredChat(conversationId, loaded);
+            try {
+              localStorage.setItem(`m7_cached_messages_${conversationId}`, JSON.stringify(loaded));
+            } catch {}
+          }
+        } else if (!isGenerating && (!cached || cached === "[]") && (!stored || stored.messages.length === 0)) {
+          setMessages([]);
+        }
+      }
+    } else {
+      // In clean /chat route: Always provide a fresh clean state
       setMessages([]);
     }
-  }, [history.data, conversationId]);
+  }, [history.data, conversationId, isGenerating]);
 
   // ── File Selection & Paste Handlers ───────────────────────────────────────
   const handleFileSelect = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) {
-      return;
-    }
+    if (!file.type.startsWith("image/")) return;
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
@@ -231,7 +1108,6 @@ export default function Chat() {
         name: file.name,
         preview: result,
       });
-      // When attaching an image, disable image gen mode to prioritize image analysis
       setImageGenMode(false);
     };
     reader.readAsDataURL(file);
@@ -280,7 +1156,21 @@ export default function Chat() {
   // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, sendMessageMutation.isPending]);
+  }, [messages, isGenerating]);
+
+  // ── Stop Generation Handler ───────────────────────────────────────────────
+  const handleStopGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+    setIsPendingWebSearch(false);
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+  }, []);
 
   // ── Voice cleanup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -292,7 +1182,7 @@ export default function Chat() {
     };
   }, []);
 
-  // ── Text to speech ─────────────────────────────────────────────────────────
+  // ── Text to speech with Dynamic Language Detection & Natural Voice Selection ─
   const speakResponse = useCallback(
     (text: string) => {
       if (
@@ -305,15 +1195,40 @@ export default function Chat() {
       }
 
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = isRtl ? "ar-SA" : "en-US";
-      utterance.rate = 0.95;
+      const textToSpeak = cleanTextForSpeech(text);
+      if (!textToSpeak) return;
+
+      const detectedLang = detectSpokenLanguage(textToSpeak);
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.lang = detectedLang;
+      utterance.rate = detectedLang.startsWith("ar") ? 0.95 : 1.0;
       utterance.pitch = 1;
 
       const voices = window.speechSynthesis.getVoices();
-      const matchedVoice = voices.find((v) =>
-        v.lang.toLowerCase().startsWith(isRtl ? "ar" : "en")
-      );
+      const targetPrefix = detectedLang.split("-")[0].toLowerCase();
+
+      let matchedVoice = voices.find((v) => v.lang.toLowerCase() === detectedLang.toLowerCase());
+      if (!matchedVoice) {
+        matchedVoice = voices.find((v) => v.lang.toLowerCase().startsWith(targetPrefix));
+      }
+
+      // Prefer high-quality/natural voice models
+      if (targetPrefix === "ar") {
+        const naturalAr = voices.find(
+          (v) =>
+            v.lang.toLowerCase().startsWith("ar") &&
+            /(google|maged|tarik|laila|hoda|salma|shakir|zeina|naayf|youssef)/i.test(v.name)
+        );
+        if (naturalAr) matchedVoice = naturalAr;
+      } else if (targetPrefix === "en") {
+        const naturalEn = voices.find(
+          (v) =>
+            v.lang.toLowerCase().startsWith("en") &&
+            /(google|samantha|daniel|zira|natural|premium|jenny)/i.test(v.name)
+        );
+        if (naturalEn) matchedVoice = naturalEn;
+      }
+
       if (matchedVoice) {
         utterance.voice = matchedVoice;
       }
@@ -345,48 +1260,55 @@ export default function Chat() {
     ) => {
       const cleanText = text.trim();
       const currentImage = attachedImage;
-      if ((!cleanText && !currentImage) || sendMessageMutation.isPending) return;
+      if ((!cleanText && !currentImage) || isGenerating) return;
 
       const isSearch = forceSearch !== undefined ? forceSearch : webSearchMode;
       const isImgGen = forceImageGen !== undefined ? forceImageGen : imageGenMode;
       setIsPendingWebSearch(isSearch);
+      setIsGenerating(true);
 
-      let effectiveConvId = targetConvId !== undefined ? targetConvId : conversationId;
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
 
-      // If no conversation exists yet, automatically create one first
-      if (!effectiveConvId) {
-        try {
-          const newConv = await createConversation.mutateAsync(undefined);
-          effectiveConvId = newConv.id;
-          queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-          navigate(`/chat/${newConv.id}`);
-        } catch (e) {
-          console.warn("Could not create conversation upfront, sending without id", e);
-        }
-      }
+      // 1. تثبيت الـ ID المعتمد للشات الحالي حصراً وتجميده لمنع التداخل
+      const currentChatId = targetConvId || conversationId || activeChatId;
 
       const userMessageContent = cleanText || (currentImage ? (isRtl ? "حلل هذه الصورة 🖼️" : "Analyze this image 🖼️") : "");
-      const newMessages: ChatMessageItem[] = [
-        ...messages,
-        {
-          role: "user",
-          content: userMessageContent,
-          imageUrl: currentImage?.preview || null,
-        },
-      ];
-      setMessages(newMessages);
+      
+      // 2. جلب رسائل الشات الحالي فقط لحظة الإرسال (Fresh Fetch)
+      const freshChatObj = getStoredChatById(currentChatId) || chats.find((c) => c.id === currentChatId);
+      const baseMessages = freshChatObj && Array.isArray(freshChatObj.messages) ? freshChatObj.messages : [];
+
+      // 3. حفظ رسالة المستخدم فوراً وتحديث الـ State باستخدام functional update
+      setMessages((prev) => {
+        const combined = [
+          ...prev,
+          {
+            id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+            role: "user" as const,
+            content: userMessageContent,
+            imageUrl: currentImage?.preview || null,
+          },
+        ];
+        saveStoredChat(currentChatId, combined);
+        return combined;
+      });
       setInputValue("");
       setAttachedImage(null);
 
-      sendMessageMutation.mutate(
-        {
+      const freshChatForApi = getStoredChatById(currentChatId) || chats.find((c) => c.id === currentChatId);
+      const apiMessages = freshChatForApi && Array.isArray(freshChatForApi.messages) ? freshChatForApi.messages : [];
+
+      try {
+        // 4. إرسال الطلب للـ API مقترناً برسائل هذا الشات فقط و الـ ID المعتمد
+        const response = await sendMessageMutation.mutateAsync({
           data: {
-            messages: newMessages.map((m) => ({
+            messages: apiMessages.map((m) => ({
               role: m.role,
               content: m.content,
               imageUrl: m.imageUrl,
             })),
-            conversationId: effectiveConvId,
+            conversationId: currentChatId,
             useWebSearch: isSearch,
             generateImage: isImgGen,
             image: currentImage
@@ -396,56 +1318,87 @@ export default function Chat() {
                 }
               : undefined,
           } as any,
-        },
-        {
-          onSuccess: (response: any) => {
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                content: response.message,
-                imageUrl: response.imageUrl || null,
-                isWebSearch: response.isWebSearch ?? isSearch,
-                isImageGeneration: response.isImageGeneration ?? isImgGen,
-                searchSources: response.searchSources,
-              },
-            ]);
-            setIsPendingWebSearch(false);
-            speakResponse(response.message);
-            queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-            queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
-          },
-          onError: (err: any) => {
-            setIsPendingWebSearch(false);
-            const errorText =
-              err?.response?.data?.error ||
-              err?.message ||
-              (isRtl
-                ? "تعذر الحصول على رد من المساعد الذكي، يرجى المحاولة مرة أخرى."
-                : "Failed to receive response from assistant. Please try again.");
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                content: `⚠️ ${errorText}`,
-              },
-            ]);
-          },
+        });
+
+        if (abortController.signal.aborted) return;
+
+        // 5. حفظ رد الـ AI باستخدام functional update لضمان عدم مسح الرسائل السابقة
+        const botMessage: ChatMessageItem = {
+          id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+          role: "assistant",
+          content: response.message,
+          imageUrl: response.imageUrl || null,
+          isWebSearch: response.isWebSearch ?? isSearch,
+          isImageGeneration: response.isImageGeneration ?? isImgGen,
+          searchSources: response.searchSources,
+          suggestions: (response as any).suggestions || undefined,
+        };
+
+        setMessages((prev) => {
+          const combined = [...prev, botMessage];
+          saveStoredChat(currentChatId, combined);
+          return combined;
+        });
+        setIsPendingWebSearch(false);
+        setIsGenerating(false);
+        abortControllerRef.current = null;
+        speakResponse(response.message);
+
+        queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
+
+      } catch (err: any) {
+        setIsPendingWebSearch(false);
+        setIsGenerating(false);
+        abortControllerRef.current = null;
+
+        if (abortController.signal.aborted || err?.name === "AbortError") {
+          const currentChatData = getStoredChatById(currentChatId);
+          const currentMsgs = currentChatData?.messages || [];
+          const stoppedMessages: ChatMessageItem[] = [
+            ...currentMsgs,
+            {
+              role: "assistant",
+              content: isRtl ? "⏹️ تم إيقاف توليد الرد." : "⏹️ Generation stopped.",
+            },
+          ];
+          saveStoredChat(currentChatId, stoppedMessages);
+          setChats(getStoredChats());
+          return;
         }
-      );
+
+        console.error("Error sending message:", err);
+        const errorText =
+          err?.response?.data?.error ||
+          err?.message ||
+          (isRtl
+            ? "تعذر الحصول على رد من المساعد الذكي، يرجى المحاولة مرة أخرى."
+            : "Failed to receive response from assistant. Please try again.");
+        const currentChatData = getStoredChatById(currentChatId);
+        const currentMsgs = currentChatData?.messages || [];
+        const errorMessages: ChatMessageItem[] = [
+          ...currentMsgs,
+          {
+            role: "assistant",
+            content: `⚠️ ${errorText}`,
+          },
+        ];
+        saveStoredChat(currentChatId, errorMessages);
+        setChats(getStoredChats());
+      }
     },
     [
-      messages,
-      conversationId,
-      sendMessageMutation,
-      createConversation,
-      queryClient,
-      speakResponse,
-      navigate,
-      isRtl,
+      attachedImage,
+      isGenerating,
       webSearchMode,
       imageGenMode,
-      attachedImage,
+      conversationId,
+      activeChatId,
+      chats,
+      sendMessageMutation,
+      isRtl,
+      speakResponse,
+      queryClient,
     ]
   );
 
@@ -463,7 +1416,7 @@ export default function Chat() {
 
   // ── Speech to text ─────────────────────────────────────────────────────────
   const handleVoiceToggle = useCallback(() => {
-    if (sendMessageMutation.isPending) return;
+    if (isGenerating) return;
 
     if (isListening) {
       recognitionRef.current?.stop();
@@ -562,32 +1515,141 @@ export default function Chat() {
     }, 2000);
   };
 
-  // ── New conversation ──────────────────────────────────────────────────────
+  // ── New conversation handler ──────────────────────────────────────────────
   const handleNewConversation = () => {
-    createConversation.mutate(undefined, {
-      onSuccess: (conv) => {
-        queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-        setSidebarOpen(false);
-        setMessages([]);
-        navigate(`/chat/${conv.id}`);
-      },
-    });
+    setSidebarOpen(false);
+    
+    // If current chat is already empty, just focus input and return
+    if (messages.length === 0 && activeChatId) {
+      setInputValue("");
+      setAttachedImage(null);
+      setImageGenMode(false);
+      setWebSearchMode(false);
+      setActionMenuOpen(false);
+      inputFieldRef.current?.focus();
+      return;
+    }
+
+    // Check if an empty chat already exists in stored chats, reuse it
+    const allChats = getStoredChats();
+    const existingEmptyChat = allChats.find(c => (!c.messages || c.messages.length === 0));
+    
+    if (existingEmptyChat) {
+      setActiveChatId(existingEmptyChat.id);
+      navigate('/chat/' + existingEmptyChat.id, { replace: true });
+      setInputValue("");
+      setAttachedImage(null);
+      setImageGenMode(false);
+      setWebSearchMode(false);
+      setActionMenuOpen(false);
+      setTimeout(() => {
+        inputFieldRef.current?.focus();
+      }, 50);
+      return;
+    }
+
+    const newId = "chat_" + Date.now();
+    saveStoredChat(newId, [], isRtl ? "محادثة جديدة" : "New Chat");
+    setChats(getStoredChats());
+    setActiveChatId(newId);
+    setInputValue("");
+    setAttachedImage(null);
+    setImageGenMode(false);
+    setWebSearchMode(false);
+    setActionMenuOpen(false);
+    navigate('/chat/' + newId, { replace: true });
+    setTimeout(() => {
+      inputFieldRef.current?.focus();
+    }, 50);
   };
 
-  // ── Delete conversation ───────────────────────────────────────────────────
+  // ── Rename conversation ───────────────────────────────────────────────────
+  const handleStartRename = (conv: { id: string; title: string }) => {
+    setEditingConvId(conv.id);
+    setEditingTitle(conv.title);
+  };
+
+  const handleSaveRename = async (id: string) => {
+    if (!editingTitle.trim()) {
+      setEditingConvId(null);
+      return;
+    }
+    try {
+      updateStoredChatTitle(id, editingTitle.trim());
+      setChats(getStoredChats());
+      await fetch(`/api/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editingTitle.trim() }),
+      });
+      queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
+    } catch (e) {
+      console.warn("Failed to rename conversation:", e);
+    } finally {
+      setEditingConvId(null);
+    }
+  };
+
+  // ── Delete single conversation ────────────────────────────────────────────
   const handleDeleteConversation = (id: string) => {
     setDeletingConvId(id);
-    deleteConversation.mutate(
-      { id },
-      {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-          setDeletingConvId(null);
-          if (id === conversationId) navigate("/chat");
-        },
-        onError: () => setDeletingConvId(null),
+    const remaining = deleteStoredChatById(id);
+    setChats(remaining);
+    setDeletingConvId(null);
+
+    // Also sync with server if needed
+    fetch(`/api/conversations/${id}`, { method: "DELETE" }).catch(() => {});
+
+    if (id === activeChatId || id === conversationId) {
+      if (remaining.length > 0) {
+        setActiveChatId(remaining[0].id);
+        navigate(`/chat/${remaining[0].id}`);
+      } else {
+        const newId = "chat_" + Date.now();
+        saveStoredChat(newId, [], isRtl ? "محادثة جديدة" : "New Chat");
+        const fresh = getStoredChats();
+        setChats(fresh);
+        setActiveChatId(newId);
+        navigate(`/chat/${newId}`);
       }
-    );
+    }
+  };
+
+  // ── Clear all conversations ───────────────────────────────────────────────
+  const handleClearAllConversations = async () => {
+    setIsClearingAll(true);
+    try {
+      await fetch("/api/conversations", { method: "DELETE" });
+      queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
+      try {
+        localStorage.removeItem("m7_cached_conversations");
+      } catch {}
+      setShowClearConfirm(false);
+      setMessages([]);
+      navigate("/chat");
+    } catch (e) {
+      console.error("Failed to clear all conversations:", e);
+    } finally {
+      setIsClearingAll(false);
+    }
+  };
+
+  // ── Clear App Cache & Reset Session State ─────────────────────────────────
+  const handleClearAppCache = () => {
+    setIsCleaningCache(true);
+    try {
+      performFullAppCacheClean();
+      queryClient.clear();
+      setMessages([]);
+      setAttachedImage(null);
+      setInputValue("");
+      navigate("/chat");
+    } catch (e) {
+      console.error("Failed to clean app cache:", e);
+    } finally {
+      setIsCleaningCache(false);
+      setSidebarOpen(false);
+    }
   };
 
   // ── Delete memory fact ────────────────────────────────────────────────────
@@ -605,186 +1667,361 @@ export default function Chat() {
     );
   };
 
-  const conversations = convs.data ?? [];
   const memoryFacts = memoryQuery.data ?? [];
 
-  const filteredConversations = conversations.filter((c) =>
-    (c.title || "").toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Filter conversations
+  const filteredConversations = useMemo(() => {
+    if (!searchQuery.trim()) return conversations;
+    const q = searchQuery.toLowerCase().trim();
+    return conversations.filter((c) => (c.title || "").toLowerCase().includes(q));
+  }, [conversations, searchQuery]);
 
-  // ── Sidebar ───────────────────────────────────────────────────────────────
-  const Sidebar = (
-    <aside
-      className={cn(
-        "relative z-20 flex flex-col h-full w-72 sm:w-80 bg-card/90 backdrop-blur-2xl border-l border-white/5 flex-shrink-0 transition-all",
-        sidebarOpen ? "flex" : "hidden md:flex"
-      )}
-    >
+  // Group conversations by time category (اليوم، الأسبوع الماضي، الشهور السابقة)
+  const groupedConversations = useMemo(() => {
+    const today: typeof conversations = [];
+    const lastWeek: typeof conversations = [];
+    const older: typeof conversations = [];
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const weekStart = todayStart - 7 * 86400000;
+
+    for (const c of filteredConversations) {
+      const time = new Date(c.updatedAt || c.createdAt || Date.now()).getTime();
+      if (time >= todayStart) {
+        today.push(c);
+      } else if (time >= weekStart) {
+        lastWeek.push(c);
+      } else {
+        older.push(c);
+      }
+    }
+
+    return [
+      { key: "today", label: isRtl ? "اليوم" : "Today", icon: Clock, items: today },
+      { key: "week", label: isRtl ? "الأسبوع الماضي" : "Last Week", icon: Calendar, items: lastWeek },
+      { key: "older", label: isRtl ? "الشهور السابقة" : "Previous Months", icon: History, items: older },
+    ].filter((g) => g.items.length > 0);
+  }, [filteredConversations, isRtl]);
+
+  // ── Sidebar Inner Body Component ──────────────────────────────────────────
+  const renderSidebarBody = () => (
+    <div className="flex flex-col h-full select-none bg-[var(--bg-primary)] text-[var(--text-main)] overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-white/5">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => navigate("/")}>
-          <div className="w-8 h-8 rounded-xl bg-amber-500 flex items-center justify-center shadow-[0_0_12px_rgba(245,158,11,0.3)]">
+      <div className="flex items-center justify-between p-4 border-b border-[var(--border-color)] flex-shrink-0">
+        <div
+          className="flex items-center gap-3 cursor-pointer group"
+          onClick={() => navigate("/")}
+          title={isRtl ? "الصفحة الرئيسية" : "Home"}
+        >
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.35)] group-hover:scale-105 transition-transform flex-shrink-0">
             <span className="font-extrabold text-black text-xs">M7</span>
           </div>
           <div>
-            <span className="font-bold text-white text-sm">M7 AI</span>
-            <span className="text-[10px] text-slate-400 block -mt-0.5">
-              {isRtl ? "المحادثات والذاكرة" : "Chats & Memory"}
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-[var(--text-main)] text-sm">M7 AI</span>
+              <span className="text-[10px] bg-[#F59E0B]/15 text-[#F59E0B] font-black px-2 py-0.5 rounded-full border border-[#F59E0B]/30 tracking-wider shadow-sm">
+                PRO
+              </span>
+            </div>
+            <span className="text-[10px] text-[var(--text-secondary)] block -mt-0.5">
+              {isRtl ? "سجل المحادثات الذكي" : "Smart Chat History"}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-1">
-          {/* Theme toggle */}
-          <ThemeToggle showLabel={false} isRtl={isRtl} className="p-1.5" />
-
-          {/* Profile button */}
+          {/* Collapse sidebar on desktop */}
           <button
-            onClick={() => navigate("/profile")}
-            title={user?.displayName || (isRtl ? "الملف الشخصي" : "Profile")}
-            className="text-slate-400 hover:text-amber-400 light:text-slate-600 light:hover:text-amber-600 transition-colors p-1.5 rounded-lg hover:bg-white/5 light:hover:bg-slate-100"
+            onClick={() => setDesktopSidebarOpen(false)}
+            className="hidden md:flex w-8 h-8 rounded-full bg-[var(--bg-card)] hover:opacity-80 text-[var(--text-secondary)] hover:text-amber-500 items-center justify-center transition-colors border border-[var(--border-color)]"
+            title={isRtl ? "إخفاء القائمة الجانبية" : "Hide Sidebar"}
           >
-            <UserCircle className="w-5 h-5" />
+            <PanelLeftClose className="w-4 h-4 rtl:rotate-180" />
           </button>
 
-          {/* Language toggle */}
+          {/* Close drawer on mobile */}
           <button
-            onClick={toggleLanguage}
-            className="text-xs font-bold text-slate-300 hover:text-amber-400 light:text-slate-700 light:hover:text-amber-600 transition-colors px-2 py-1 rounded-lg hover:bg-white/5 light:hover:bg-slate-100"
-            title="Switch Language"
-          >
-            {isRtl ? "EN" : "عربي"}
-          </button>
-
-          <button
-            className="md:hidden text-slate-400 hover:text-white light:text-slate-600 light:hover:text-black p-1"
+            className="md:hidden w-8 h-8 rounded-full bg-[var(--bg-card)] hover:opacity-80 text-[var(--text-secondary)] hover:text-[var(--text-main)] flex items-center justify-center transition-colors cursor-pointer border border-[var(--border-color)]"
             onClick={() => setSidebarOpen(false)}
+            title={isRtl ? "إغلاق" : "Close"}
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* New conversation button */}
-      <div className="p-3">
+      {/* Actions & Search Section */}
+      <div className="p-3.5 space-y-2.5 flex-shrink-0">
+        {/* New conversation button */}
         <Button
-          className="w-full gap-2 rounded-xl h-11 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-md shadow-amber-500/10"
+          className="w-full gap-2 rounded-[16px] h-12 bg-[#F59E0B] hover:bg-[#F59E0B]/90 text-black font-extrabold text-sm shadow-lg shadow-[#F59E0B]/20 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center border-0"
           onClick={handleNewConversation}
-          disabled={createConversation.isPending}
         >
-          {createConversation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Plus className="w-4 h-4" />
-          )}
+          <Plus className="w-4 h-4 stroke-[2.5]" />
           <span>{isRtl ? "محادثة جديدة" : "New Chat"}</span>
         </Button>
-      </div>
 
-      {/* Search Bar */}
-      <div className="px-3 mb-2">
+        {/* Search Bar */}
         <div className="relative flex items-center">
-          <Search className="w-4 h-4 absolute right-3 text-slate-500" />
+          <Search className="w-4 h-4 absolute right-3 rtl:right-3 rtl:left-auto text-[var(--text-secondary)] pointer-events-none" />
           <input
             type="text"
-            placeholder={isRtl ? "بحث في المحادثات..." : "Search chats..."}
+            placeholder={isRtl ? "البحث في سجل المحادثات..." : "Search chat history..."}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-3 pr-9 py-2 text-xs rounded-xl bg-white/[0.03] border border-white/10 text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50 transition-all"
+            className="w-full pr-9 pl-8 rtl:pr-9 rtl:pl-8 py-2.5 text-xs rounded-[14px] bg-[var(--bg-card)] border border-[var(--border-color)] text-[var(--text-main)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[#F59E0B]/60 focus:ring-1 focus:ring-[#F59E0B]/30 transition-all"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute left-2.5 rtl:left-2.5 rtl:right-auto text-[var(--text-secondary)] hover:text-[var(--text-main)] p-1"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Conversation list */}
-      <nav className="flex-1 overflow-y-auto px-2 space-y-1 min-h-0">
-        {convs.isLoading ? (
-          <div className="flex justify-center py-8">
-            <Loader2 className="w-5 h-5 animate-spin text-amber-400" />
+      {/* Conversation list with time categorization */}
+      <nav className="flex-1 overflow-y-auto px-3 py-1 space-y-3 min-h-0 custom-scrollbar">
+        {convs.isLoading && conversations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 gap-2 text-[var(--text-secondary)] text-xs">
+            <Loader2 className="w-5 h-5 animate-spin text-[#F59E0B]" />
+            <span>{isRtl ? "جارٍ جلب السجل..." : "Loading chats..."}</span>
           </div>
         ) : filteredConversations.length === 0 ? (
-          <p className="text-center text-slate-500 text-xs py-8">
-            {isRtl ? "لا توجد محادثات سابقة" : "No previous conversations"}
-          </p>
+          <div className="p-6 rounded-[18px] bg-[var(--bg-card)] border border-[var(--border-color)] text-center shadow-lg my-6 mx-1 animate-in fade-in">
+            <div className="w-12 h-12 rounded-2xl bg-[#F59E0B]/10 border border-[#F59E0B]/20 text-[#F59E0B] flex items-center justify-center mx-auto mb-3.5 shadow-inner">
+              <MessageSquare className="w-6 h-6" />
+            </div>
+            <p className="text-xs font-bold text-[var(--text-main)] mb-1.5">
+              {searchQuery
+                ? isRtl
+                  ? "لا توجد نتائج مطابقة لبحثك"
+                  : "No matching conversations"
+                : isRtl
+                  ? "لا توجد محادثات سابقة بعد."
+                  : "No previous chats yet."}
+            </p>
+            <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+              {searchQuery
+                ? isRtl
+                  ? "جرب كلمة بحث أخرى"
+                  : "Try another search term"
+                : isRtl
+                  ? "ابدأ محادثتك الأولى الآن مع M7 AI واستكشف إمكانيات الذكاء الاصطناعي."
+                  : "Start your first conversation with M7 AI and explore intelligent AI capabilities."}
+            </p>
+          </div>
         ) : (
-          filteredConversations.map((conv) => (
-            <div
-              key={conv.id}
-              className={cn(
-                "group flex items-center gap-2.5 rounded-xl px-3 py-2.5 cursor-pointer transition-all border",
-                conv.id === conversationId
-                  ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
-                  : "hover:bg-white/5 border-transparent text-slate-200"
-              )}
-              onClick={() => {
-                setSidebarOpen(false);
-                if (conv.id !== conversationId) {
-                  setMessages([]);
-                  navigate(`/chat/${conv.id}`);
-                }
-              }}
-            >
-              <MessageSquare className="w-4 h-4 flex-shrink-0 opacity-70" />
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium truncate">{conv.title}</p>
-                <p className="text-[10px] text-slate-500">
-                  {formatDate(conv.updatedAt, isRtl)}
-                </p>
+          groupedConversations.map((group) => (
+            <div key={group.key} className="space-y-1.5">
+              {/* Group Category Header */}
+              <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
+                <group.icon className="w-3.5 h-3.5 text-[#F59E0B]" />
+                <span>{group.label}</span>
+                <span className="text-[9px] bg-black/5 dark:bg-white/5 px-1.5 py-0.2 rounded-full text-[var(--text-secondary)]">
+                  {group.items.length}
+                </span>
               </div>
-              <button
-                className={cn(
-                  "opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-500/20 hover:text-red-400 transition-all flex-shrink-0",
-                  deletingConvId === conv.id && "opacity-100"
-                )}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDeleteConversation(conv.id);
-                }}
-                title={isRtl ? "حذف المحادثة" : "Delete chat"}
-              >
-                {deletingConvId === conv.id ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-              </button>
+
+              {/* Group Items */}
+              {group.items.map((conv) => {
+                const isActive = conv.id === conversationId;
+                const isEditing = editingConvId === conv.id;
+
+                return (
+                  <div
+                    key={conv.id}
+                    className={cn(
+                      "group relative flex items-center gap-2.5 rounded-[14px] p-2.5 cursor-pointer transition-all border text-right",
+                      isActive
+                        ? "bg-[#F59E0B]/10 border-[#F59E0B]/40 text-[#F59E0B] shadow-sm"
+                        : "bg-[var(--bg-card)] hover:opacity-90 border-[var(--border-color)] hover:border-[#F59E0B]/40 text-[var(--text-main)]"
+                    )}
+                    onClick={() => {
+                      if (isEditing) return;
+                      setSidebarOpen(false);
+                      if (conv.id !== conversationId) {
+                        navigate(`/chat/${conv.id}`);
+                      }
+                    }}
+                  >
+                    {/* Active Indicator & Icon */}
+                    <div className="relative flex-shrink-0">
+                      <MessageSquare
+                        className={cn(
+                          "w-4 h-4 transition-colors",
+                          isActive ? "text-[#F59E0B]" : "text-[var(--text-secondary)] group-hover:text-[#F59E0B]"
+                        )}
+                      />
+                      {isActive && (
+                        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-[#F59E0B] animate-pulse" />
+                      )}
+                    </div>
+
+                    {/* Title and Time / Edit mode */}
+                    <div className="flex-1 min-w-0">
+                      {isEditing ? (
+                        <div
+                          className="flex items-center gap-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveRename(conv.id);
+                              if (e.key === "Escape") setEditingConvId(null);
+                            }}
+                            autoFocus
+                            className="w-full text-xs bg-[var(--bg-primary)] border border-[#F59E0B]/50 rounded-lg px-2 py-1 text-[var(--text-main)] focus:outline-none"
+                          />
+                          <button
+                            onClick={() => handleSaveRename(conv.id)}
+                            className="p-1 rounded bg-[#F59E0B] text-black hover:bg-[#F59E0B]/80 font-bold"
+                            title={isRtl ? "حفظ" : "Save"}
+                          >
+                            <Check className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={() => setEditingConvId(null)}
+                            className="p-1 rounded bg-black/10 dark:bg-white/10 text-[var(--text-main)] hover:opacity-80"
+                            title={isRtl ? "إلغاء" : "Cancel"}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <p
+                            className={cn(
+                              "text-xs font-semibold truncate leading-snug",
+                              isActive ? "text-[#F59E0B]" : "text-[var(--text-main)]"
+                            )}
+                          >
+                            {conv.title || (isRtl ? "محادثة بدون عنوان" : "Untitled Chat")}
+                          </p>
+                          <p className="text-[10px] text-[var(--text-secondary)] mt-0.5 flex items-center gap-1">
+                            <span>{parseRelativeTime(conv.updatedAt || (conv as any).createdAt, isRtl)}</span>
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Actions (Rename & Delete) */}
+                    {!isEditing && (
+                      <div
+                        className={cn(
+                          "flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0",
+                          (isActive || deletingConvId === conv.id) && "opacity-100"
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-[#F59E0B] transition-all"
+                          onClick={() => handleStartRename(conv)}
+                          title={isRtl ? "إعادة تسمية المحادثة" : "Rename chat"}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          className="p-1.5 rounded-lg hover:bg-red-500/20 text-[var(--text-secondary)] hover:text-red-500 transition-all"
+                          onClick={() => handleDeleteConversation(conv.id)}
+                          title={isRtl ? "حذف المحادثة" : "Delete chat"}
+                        >
+                          {deletingConvId === conv.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))
         )}
       </nav>
 
-      {/* ── Memory Panel ──────────────────────────────────────────────────── */}
-      <div className="border-t border-white/5 flex-shrink-0 bg-black/20">
+      {/* Clear All Chats action button */}
+      {conversations.length > 0 && (
+        <div className="px-3.5 py-1.5 border-t border-[var(--border-color)] flex-shrink-0">
+          {showClearConfirm ? (
+            <div className="p-2.5 rounded-[14px] bg-red-500/10 border border-red-500/30 text-xs space-y-2 animate-in fade-in">
+              <p className="text-[11px] text-red-500 dark:text-red-300 font-semibold text-center">
+                {isRtl ? "هل أنت متأكد من مسح كافة المحادثات؟" : "Clear all chat history?"}
+              </p>
+              <div className="flex items-center justify-center gap-2">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 text-xs px-3 font-bold rounded-lg"
+                  onClick={handleClearAllConversations}
+                  disabled={isClearingAll}
+                >
+                  {isClearingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : isRtl ? "نعم، احذف الكل" : "Yes, delete"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs px-3 rounded-lg"
+                  onClick={() => setShowClearConfirm(false)}
+                >
+                  {isRtl ? "إلغاء" : "Cancel"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] text-[var(--text-secondary)] hover:text-red-500 transition-colors rounded-lg hover:bg-black/5 dark:hover:bg-white/[0.04]"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>{isRtl ? "مسح سجل المحادثات بالكامل" : "Clear all chat history"}</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Smart Memory Panel & Footer Navigation ─────────────────────────── */}
+      <div className="border-t border-[var(--border-color)] flex-shrink-0 bg-[var(--bg-primary)] p-3 space-y-2">
+        {/* Smart Memory quick row */}
         <button
-          className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
+          className="w-full flex items-center justify-between p-2.5 rounded-[14px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] text-xs text-[var(--text-main)] transition-colors cursor-pointer"
           onClick={() => setMemoryExpanded((v) => !v)}
         >
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-            <Brain className="w-4 h-4 text-amber-400" />
-            <span>{isRtl ? "الذاكرة الذكية" : "Smart Memory"}</span>
+          <div className="flex items-center gap-2">
+            <Brain className="w-4 h-4 text-[#F59E0B]" />
+            <span className="font-bold">{isRtl ? "الذاكرة الذكية" : "Smart Memory"}</span>
             {memoryFacts.length > 0 && (
-              <span className="text-[10px] bg-amber-500/20 text-amber-400 px-1.5 py-0.2 rounded-full">
+              <span className="text-[10px] bg-[#F59E0B]/20 text-[#F59E0B] font-bold px-1.5 py-0.2 rounded-full">
                 {memoryFacts.length}
               </span>
             )}
           </div>
           {memoryExpanded ? (
-            <ChevronDown className="w-4 h-4 text-slate-400" />
+            <ChevronDown className="w-4 h-4 text-[var(--text-secondary)]" />
           ) : (
-            <ChevronUp className="w-4 h-4 text-slate-400" />
+            <ChevronUp className="w-4 h-4 text-[var(--text-secondary)]" />
           )}
         </button>
 
         {memoryExpanded && (
-          <div className="px-3 pb-3 space-y-1.5 max-h-40 overflow-y-auto">
+          <div className="px-1 pb-1 space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
             {memoryQuery.isLoading ? (
               <div className="flex justify-center py-3">
-                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                <Loader2 className="w-4 h-4 animate-spin text-[#F59E0B]" />
               </div>
             ) : memoryFacts.length === 0 ? (
-              <p className="text-center text-slate-500 text-[11px] py-2">
+              <p className="text-center text-[var(--text-secondary)] text-[11px] py-2">
                 {isRtl ? "لا توجد معلومات محفوظة بعد." : "No memory facts stored yet."}
                 <br />
-                <span className="text-[10px] text-slate-600">
+                <span className="text-[10px] text-[var(--text-secondary)] opacity-80">
                   {isRtl ? "جرّب: «اسمي محمود»" : "Try: 'My name is Alex'"}
                 </span>
               </p>
@@ -792,22 +2029,22 @@ export default function Chat() {
               memoryFacts.map((fact) => (
                 <div
                   key={fact.key}
-                  className="group flex items-center justify-between rounded-lg px-2.5 py-1.5 bg-white/[0.02] hover:bg-white/5 border border-white/5 transition-colors"
+                  className="group flex items-center justify-between rounded-[12px] px-2.5 py-1.5 bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] transition-colors"
                 >
-                  <div className="min-w-0 pr-1">
-                    <span className="text-[10px] text-amber-400 font-medium block">
+                  <div className="min-w-0 pr-1 text-right">
+                    <span className="text-[10px] text-[#F59E0B] font-semibold block">
                       {fact.label}
                     </span>
-                    <span className="text-xs text-slate-200 truncate block">
+                    <span className="text-xs text-[var(--text-main)] truncate block">
                       {fact.value}
                     </span>
                   </div>
                   <button
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 hover:text-red-400 transition-all flex-shrink-0"
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 hover:text-red-500 transition-all flex-shrink-0"
                     onClick={() => handleDeleteMemory(fact.key)}
                   >
                     {deletingMemKey === fact.key ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <Loader2 className="w-3 h-3 animate-spin text-red-500" />
                     ) : (
                       <Trash2 className="w-3 h-3" />
                     )}
@@ -817,31 +2054,89 @@ export default function Chat() {
             )}
           </div>
         )}
-      </div>
 
-      {/* Back to home */}
-      <div className="p-3 border-t border-white/5">
-        <button
-          onClick={() => navigate("/")}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-white hover:bg-white/5 transition-all"
-        >
-          <Home className="w-4 h-4 text-amber-400" />
-          <span>{isRtl ? "الصفحة الرئيسية" : "Home Page"}</span>
-        </button>
+        {/* Shortcuts footer */}
+        <div className="flex items-center justify-between gap-1.5 pt-1">
+          <button
+            onClick={() => navigate("/")}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[12px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] text-xs font-semibold text-[var(--text-main)] transition-colors flex-1 justify-center"
+            title={isRtl ? "الصفحة الرئيسية" : "Home Page"}
+          >
+            <Home className="w-3.5 h-3.5 text-[#F59E0B]" />
+            <span>{isRtl ? "الرئيسية" : "Home"}</span>
+          </button>
+
+          <button
+            onClick={handleClearAppCache}
+            disabled={isCleaningCache}
+            className="p-2 rounded-[12px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] text-[var(--text-secondary)] hover:text-red-500 transition-colors"
+            title={isRtl ? "تفريغ الذاكرة المؤقتة وبدء جلسة جديدة (Clear Cache)" : "Clear Cache & Fresh Session"}
+          >
+            {isCleaningCache ? (
+              <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+            ) : (
+              <RotateCcw className="w-4 h-4" />
+            )}
+          </button>
+
+          <ThemeToggle showLabel={false} isRtl={isRtl} className="p-2 rounded-[12px] bg-[var(--bg-card)] hover:opacity-90 text-[var(--text-main)] border border-[var(--border-color)]" />
+
+          <button
+            onClick={toggleLanguage}
+            className="px-2.5 py-1.5 rounded-[12px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] text-xs font-bold text-[var(--text-main)] hover:text-[#F59E0B] transition-colors"
+            title="Switch Language"
+          >
+            {isRtl ? "EN" : "عربي"}
+          </button>
+
+          <button
+            onClick={() => navigate("/profile")}
+            title={user?.displayName || (isRtl ? "الملف الشخصي" : "Profile")}
+            className="p-2 rounded-[12px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] text-[var(--text-main)] hover:text-[#F59E0B] transition-colors"
+          >
+            <UserCircle className="w-4 h-4" />
+          </button>
+        </div>
       </div>
-    </aside>
+    </div>
   );
 
   return (
-    <div className="flex h-[100dvh] bg-[#0b0d10] text-[#f8fafc] light:bg-[#f8fafc] light:text-[#0f172a] overflow-hidden transition-colors duration-200" dir={isRtl ? "rtl" : "ltr"}>
-      {Sidebar}
+    <div
+      className="flex h-[100dvh] bg-[var(--bg-primary)] text-[var(--text-main)] overflow-hidden transition-colors duration-300"
+      dir={isRtl ? "rtl" : "ltr"}
+    >
+      {/* Desktop Sidebar (Fixed Column) */}
+      {desktopSidebarOpen && (
+        <aside className="hidden md:flex w-80 h-full border-s md:border-s-0 md:border-e border-[var(--border-color)] flex-shrink-0 z-20 overflow-hidden">
+          {renderSidebarBody()}
+        </aside>
+      )}
 
-      {/* Mobile overlay */}
+      {/* Mobile Drawer (80% - 85% width with Glassmorphism backdrop & rounded edge) */}
       {sidebarOpen && (
-        <div
-          className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-10"
-          onClick={() => setSidebarOpen(false)}
-        />
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          {/* Glassmorphism Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-md transition-opacity animate-in fade-in duration-300"
+            onClick={() => setSidebarOpen(false)}
+          />
+
+          {/* Drawer Panel */}
+          <div
+            className={cn(
+              "relative z-50 h-full w-[82%] sm:w-80 max-w-[360px] bg-[var(--bg-primary)] border-[var(--border-color)] shadow-2xl overflow-hidden flex flex-col animate-in duration-300",
+              isRtl
+                ? "mr-auto rounded-l-[20px] border-l slide-in-from-right"
+                : "ml-auto rounded-r-[20px] border-r slide-in-from-left"
+            )}
+            style={{
+              borderRadius: isRtl ? "20px 0 0 20px" : "0 20px 20px 0",
+            }}
+          >
+            {renderSidebarBody()}
+          </div>
+        </div>
       )}
 
       {/* Main chat view */}
@@ -882,22 +2177,47 @@ export default function Chat() {
         )}
 
         {/* Top Header */}
-        <header className="glass flex-none flex items-center justify-between px-4 h-16 border-b border-white/10 light:border-slate-200 z-10">
+        <header className="glass flex-none flex items-center justify-between px-4 h-16 border-b border-[var(--border-color)] z-10">
           <div className="flex items-center gap-3">
+            {/* Mobile Open Sidebar */}
             <button
-              className="md:hidden p-2 rounded-xl hover:bg-white/10 light:hover:bg-slate-200 text-slate-300 light:text-slate-700"
+              className="md:hidden p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-[var(--text-main)] transition-colors"
               onClick={() => setSidebarOpen(true)}
+              title={isRtl ? "فتح سجل المحادثات" : "Open Chat History"}
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.25)] cursor-pointer" onClick={() => navigate("/")}>
+
+            {/* Desktop Toggle Sidebar */}
+            {!desktopSidebarOpen && (
+              <button
+                className="hidden md:flex p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-amber-500 transition-colors"
+                onClick={() => setDesktopSidebarOpen(true)}
+                title={isRtl ? "إظهار سجل المحادثات" : "Show Chat History"}
+              >
+                <PanelLeftOpen className="w-5 h-5 rtl:rotate-180 text-amber-500" />
+              </button>
+            )}
+
+            <div
+              className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.25)] cursor-pointer hover:scale-105 transition-transform"
+              onClick={() => navigate("/")}
+            >
               <span className="font-extrabold text-black text-xs">M7</span>
             </div>
+
             <div>
-              <h1 className="font-bold text-sm text-white light:text-slate-900 leading-tight">M7 AI</h1>
+              <h1 className="font-bold text-sm text-[var(--text-main)] leading-tight flex items-center gap-1.5">
+                <span>M7 AI</span>
+                {conversationId && (
+                  <span className="text-[10px] text-[var(--text-secondary)] font-normal truncate max-w-[150px] sm:max-w-xs">
+                    • {conversations.find((c) => c.id === conversationId)?.title || ""}
+                  </span>
+                )}
+              </h1>
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-[11px] text-slate-400 light:text-slate-500">
+                <span className="text-[11px] text-[var(--text-secondary)]">
                   {isRtl ? "متصل بالذكاء الاصطناعي ومتعدد الوسائط 🤖🎨" : "Multimodal AI Ready 🤖🎨"}
                 </span>
               </div>
@@ -905,11 +2225,21 @@ export default function Chat() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Quick New Chat Button in Header */}
+            <Button
+              size="sm"
+              onClick={handleNewConversation}
+              className="h-8 gap-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-600 dark:text-amber-300 hover:text-black border border-amber-500/40 text-xs font-bold transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{isRtl ? "محادثة جديدة" : "New Chat"}</span>
+            </Button>
+
             <ThemeToggle showLabel={false} isRtl={isRtl} />
 
             <button
               onClick={() => navigate("/")}
-              className="p-2 rounded-xl hover:bg-white/10 light:hover:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-amber-400 light:hover:text-amber-600 transition-colors"
+              className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-amber-500 transition-colors"
               title={isRtl ? "الصفحة الرئيسية" : "Home"}
             >
               <Home className="w-4 h-4" />
@@ -917,7 +2247,7 @@ export default function Chat() {
 
             <button
               onClick={() => navigate("/profile")}
-              className="p-2 rounded-xl hover:bg-white/10 light:hover:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-amber-400 light:hover:text-amber-600 transition-colors"
+              className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-amber-500 transition-colors"
               title={isRtl ? "الملف الشخصي" : "Profile"}
             >
               <UserCircle className="w-5 h-5" />
@@ -926,27 +2256,27 @@ export default function Chat() {
         </header>
 
         {/* Messages */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 custom-scrollbar">
           <div className="max-w-3xl mx-auto flex flex-col space-y-6">
-            {history.isLoading ? (
+            {history.isLoading && messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 gap-3">
-                <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
-                <p className="text-xs text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin text-[#F59E0B]" />
+                <p className="text-xs text-[var(--text-secondary)]">
                   {isRtl ? "جارٍ تحميل المحادثة..." : "Loading conversation..."}
                 </p>
               </div>
             ) : messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center min-h-[50vh] text-center space-y-8 animate-in fade-in zoom-in duration-500">
                 <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-amber-500/20 to-transparent flex items-center justify-center border border-amber-500/30 shadow-[0_0_30px_rgba(245,158,11,0.15)]">
-                  <span className="text-3xl font-black text-amber-400">M7</span>
+                  <span className="text-3xl font-black text-[#F59E0B]">M7</span>
                 </div>
                 <div className="space-y-1">
-                  <h2 className="text-lg sm:text-xl font-bold text-white">
+                  <h2 className="text-lg sm:text-xl font-bold text-[var(--text-main)]">
                     {isRtl
                       ? "أهلاً بك! أنا M7 AI، كيف يمكنني مساعدتك اليوم؟ 🤖✨"
                       : "Welcome! I'm M7 AI, how can I assist you today? 🤖✨"}
                   </h2>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[var(--text-secondary)]">
                     {isRtl
                       ? "يدعم المحادثة الفورية، توليد الصور 🎨، تحليل الصور 🖼️، والبحث الحي في الويب 🌐"
                       : "Supports instant chat, AI image generation 🎨, image vision analysis 🖼️, & web search 🌐"}
@@ -957,9 +2287,9 @@ export default function Chat() {
                     <button
                       key={i}
                       onClick={() => handleSend(s)}
-                      className="p-4 rounded-2xl bg-white/[0.03] light:bg-white hover:bg-white/[0.06] light:hover:bg-slate-50 border border-white/10 light:border-slate-200 hover:border-amber-500/40 transition-all text-right group shadow-lg"
+                      className="p-4 rounded-2xl bg-[var(--bg-card)] hover:opacity-95 border border-[var(--border-color)] hover:border-amber-500/40 transition-all text-start group shadow-md"
                     >
-                      <p className="text-xs sm:text-sm font-medium text-slate-300 light:text-slate-800 group-hover:text-amber-300 light:group-hover:text-amber-600 transition-colors">
+                      <p className="text-xs sm:text-sm font-medium text-[var(--text-main)] group-hover:text-amber-500 transition-colors">
                         {s}
                       </p>
                     </button>
@@ -967,206 +2297,38 @@ export default function Chat() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-5">
+              <div className="space-y-6">
                 {messages.map((msg, idx) => (
-                  <div
-                    key={idx}
-                    className={cn(
-                      "flex w-full animate-in slide-in-from-bottom-2 fade-in duration-300",
-                      msg.role === "user" ? "justify-start" : "justify-end"
-                    )}
-                  >
-                    <div className="relative group max-w-[90%] sm:max-w-[80%]">
-                      <div
-                        className={cn(
-                          "px-5 py-3.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap shadow-md",
-                          msg.role === "user"
-                            ? "bg-amber-500 text-black font-medium rounded-tr-sm"
-                            : "bg-[#14181f] text-slate-100 light:bg-white light:text-slate-900 rounded-tl-sm border border-white/10 light:border-slate-200 pb-8"
-                        )}
-                      >
-                        {/* Web search badge */}
-                        {msg.role === "assistant" && msg.isWebSearch && (
-                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400 light:text-amber-700 bg-amber-500/10 light:bg-amber-50 border border-amber-500/30 light:border-amber-300 px-2.5 py-1 rounded-xl mb-2.5 w-fit shadow-sm">
-                            <Globe className="w-3.5 h-3.5 text-amber-400" />
-                            <span>{isRtl ? "نتائج حية موثقة من بحث الويب (Google Search) 🌐🔍" : "Live Google Search Grounded Results 🌐🔍"}</span>
-                          </div>
-                        )}
-
-                        {/* Generated Image badge */}
-                        {msg.role === "assistant" && (msg.isImageGeneration || msg.imageUrl) && (
-                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400 light:text-amber-700 bg-amber-500/10 light:bg-amber-50 border border-amber-500/30 light:border-amber-300 px-2.5 py-1 rounded-xl mb-2.5 w-fit shadow-sm">
-                            <Paintbrush className="w-3.5 h-3.5 text-amber-400" />
-                            <span>{isRtl ? "صورة مولدة بالذكاء الاصطناعي (M7 Vision) 🎨✨" : "AI Generated Image (M7 Vision) 🎨✨"}</span>
-                          </div>
-                        )}
-
-                        {/* Image Display */}
-                        {msg.imageUrl && (
-                          <div className="mb-3 overflow-hidden rounded-xl border border-white/15 light:border-slate-300 relative group/img max-w-sm">
-                            <img
-                              src={msg.imageUrl}
-                              alt={msg.role === "user" ? "User upload" : "AI Generated"}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-auto max-h-72 object-cover cursor-pointer hover:scale-[1.02] transition-transform duration-300 rounded-xl"
-                              onClick={() => setImageModalUrl(msg.imageUrl!)}
-                            />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
-                              <button
-                                type="button"
-                                onClick={() => setImageModalUrl(msg.imageUrl!)}
-                                className="p-2 rounded-xl bg-black/70 hover:bg-amber-500 hover:text-black text-white transition-all"
-                                title={isRtl ? "عرض بحجم كامل" : "View Fullscreen"}
-                              >
-                                <Maximize2 className="w-4 h-4" />
-                              </button>
-                              <a
-                                href={msg.imageUrl}
-                                download={`m7-image-${Date.now()}.png`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="p-2 rounded-xl bg-black/70 hover:bg-amber-500 hover:text-black text-white transition-all"
-                                title={isRtl ? "تحميل الصورة" : "Download Image"}
-                              >
-                                <Download className="w-4 h-4" />
-                              </a>
-                            </div>
-                          </div>
-                        )}
-
-                        <div>{msg.content}</div>
-
-                        {msg.role === "assistant" && msg.searchSources && msg.searchSources.length > 0 && (
-                          <div className="mt-3.5 pt-3 border-t border-white/10 light:border-slate-200 text-right" dir={isRtl ? "rtl" : "ltr"}>
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400 light:text-amber-700 mb-2">
-                              <Globe className="w-3.5 h-3.5" />
-                              <span>{isRtl ? "المصادر والمراجع المباشرة من الويب:" : "Live Web Sources & Links:"}</span>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {msg.searchSources.map((src, sIdx) => (
-                                <a
-                                  key={sIdx}
-                                  href={src.uri}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-start gap-2 p-2.5 rounded-xl bg-white/[0.04] light:bg-slate-50 hover:bg-amber-500/15 light:hover:bg-amber-50 border border-white/10 light:border-slate-200 hover:border-amber-500/40 text-slate-300 light:text-slate-800 hover:text-amber-300 light:hover:text-amber-700 transition-all text-xs group"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5 text-amber-400 light:text-amber-600 mt-0.5 flex-shrink-0 group-hover:scale-110 transition-transform" />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="font-semibold truncate text-[11px]">
-                                      {src.title || (src as any).domain || "مصدر الويب"}
-                                    </div>
-                                    {(src as any).domain && (
-                                      <div className="text-[10px] text-slate-400 light:text-slate-500 truncate mt-0.5">
-                                        {(src as any).domain}
-                                      </div>
-                                    )}
-                                  </div>
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Assistant actions: Copy, Speak, Retry */}
-                      {msg.role === "assistant" && (
-                        <div className="absolute bottom-2 left-2 flex items-center gap-1">
-                          {msg.content.startsWith("⚠️") && (
-                            <button
-                              onClick={() => {
-                                // Find the last user message and retry
-                                const prevUserMsg = [...messages.slice(0, idx)].reverse().find((m) => m.role === "user");
-                                if (prevUserMsg) {
-                                  handleSend(prevUserMsg.content, undefined, msg.isWebSearch, msg.isImageGeneration);
-                                }
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-black transition-all"
-                              title={isRtl ? "إعادة المحاولة فوراً" : "Retry now"}
-                            >
-                              <RotateCcw className="w-3 h-3" />
-                              <span className="text-[11px]">{isRtl ? "إعادة المحاولة" : "Retry"}</span>
-                            </button>
-                          )}
-
-                          <button
-                            onClick={() => handleCopy(msg.content, idx)}
-                            className="p-1 rounded-lg text-slate-400 light:text-slate-500 hover:text-amber-400 light:hover:text-amber-600 hover:bg-white/10 light:hover:bg-slate-100 transition-all"
-                            title={isRtl ? "نسخ النص" : "Copy text"}
-                          >
-                            {copiedIdx === idx ? (
-                              <Check className="w-3.5 h-3.5 text-green-400" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-
-                          <button
-                            onClick={() => speakResponse(msg.content)}
-                            className="p-1 rounded-lg text-slate-400 light:text-slate-500 hover:text-amber-400 light:hover:text-amber-600 hover:bg-white/10 light:hover:bg-slate-100 transition-all"
-                            title={isRtl ? "قراءة صوتية" : "Listen audio"}
-                          >
-                            <Volume2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <ChatMessageCard
+                    key={msg.id || idx + "_" + (msg.content?.slice(0, 15) || "")}
+                    msg={msg}
+                    idx={idx}
+                    isRtl={isRtl}
+                    isCopied={copiedIdx === idx}
+                    copiedSourceUri={copiedSourceUri}
+                    isLatestAssistant={idx === messages.length - 1 && msg.role === "assistant"}
+                    isGenerating={isGenerating}
+                    onCopyText={handleCopy}
+                    onSpeak={speakResponse}
+                    onSelectSuggestion={(suggestion) => handleSend(suggestion)}
+                    onRetry={() => {
+                      const prevUserMsg = [...messages.slice(0, idx)].reverse().find((m) => m.role === "user");
+                      if (prevUserMsg) {
+                        handleSend(prevUserMsg.content, undefined, msg.isWebSearch, msg.isImageGeneration);
+                      }
+                    }}
+                    onOpenImageModal={setImageModalUrl}
+                    onCopySource={handleCopySource}
+                  />
                 ))}
 
-                {sendMessageMutation.isPending && (
-                  <div className="flex w-full justify-end animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    {isPendingWebSearch ? (
-                      <div className="bg-[#14181f] light:bg-white px-5 py-4 rounded-2xl rounded-tl-sm flex flex-col gap-2.5 border border-amber-500/40 light:border-amber-500/50 shadow-xl shadow-amber-500/10 max-w-sm">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-amber-500 text-black flex items-center justify-center flex-shrink-0 animate-pulse">
-                            <Search className="w-4 h-4" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-amber-400 light:text-amber-700 flex items-center gap-1.5">
-                              <span>{isRtl ? "(جاري البحث في الويب 🔍...)" : "(Searching the live web 🔍...)"}</span>
-                            </div>
-                            <p className="text-[11px] text-slate-400 light:text-slate-500 mt-0.5">
-                              {isRtl ? "جاري جلب أحدث النتائج الحية من محرك بحث Google وتلخيصها..." : "Retrieving fresh Google Search data and synthesizing answer..."}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between pt-1.5 border-t border-white/10 light:border-slate-100 text-[10px] text-slate-400 light:text-slate-500">
-                          <span className="flex items-center gap-1 font-medium">
-                            <Globe className="w-3 h-3 text-amber-400" />
-                            {isRtl ? "محرك M7 للبحث المباشر" : "M7 Live Search Engine"}
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                            <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                            <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                          </div>
-                        </div>
-                      </div>
-                    ) : imageGenMode ? (
-                      <div className="bg-[#14181f] light:bg-white px-5 py-4 rounded-2xl rounded-tl-sm flex flex-col gap-2.5 border border-amber-500/40 light:border-amber-500/50 shadow-xl shadow-amber-500/10 max-w-sm">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-amber-500 text-black flex items-center justify-center flex-shrink-0 animate-spin">
-                            <Paintbrush className="w-4 h-4" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-amber-400 light:text-amber-700 flex items-center gap-1.5">
-                              <span>{isRtl ? "(جاري توليد الصورة بالذكاء الاصطناعي 🎨...)" : "(Generating AI Image 🎨...)"}</span>
-                            </div>
-                            <p className="text-[11px] text-slate-400 light:text-slate-500 mt-0.5">
-                              {isRtl ? "جاري رسم وتصميم وتوليد الصورة المطلوبة بدقة عالية..." : "Synthesizing and rendering high quality AI artwork..."}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="bg-[#14181f] light:bg-white px-5 py-4 rounded-2xl rounded-tl-sm flex items-center gap-1.5 border border-white/10 light:border-slate-200 shadow-sm">
-                        <span className="w-2 h-2 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                        <span className="w-2 h-2 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                        <span className="w-2 h-2 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                      </div>
-                    )}
-                  </div>
+                {isGenerating && (
+                  <LoadingStateCard
+                    isPendingWebSearch={isPendingWebSearch}
+                    imageGenMode={imageGenMode}
+                    isRtl={isRtl}
+                    onStop={handleStopGeneration}
+                  />
                 )}
               </div>
             )}
@@ -1175,82 +2337,9 @@ export default function Chat() {
         </main>
 
         {/* Bottom Input Section */}
-        <footer className="glass flex-none p-3 sm:p-4 border-t border-white/10 light:border-slate-200">
-          {/* Mode toggle bar */}
-          <div className="max-w-3xl mx-auto mb-2.5 px-1 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              {/* Image Generation Mode Toggle */}
-              <button
-                type="button"
-                onClick={() => {
-                  setImageGenMode((prev) => !prev);
-                  if (!imageGenMode) {
-                    setWebSearchMode(false);
-                  }
-                }}
-                className={cn(
-                  "flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full transition-all duration-200 border cursor-pointer select-none",
-                  imageGenMode
-                    ? "bg-amber-500 text-black border-amber-400 shadow-md shadow-amber-500/30 ring-2 ring-amber-400/40 font-bold"
-                    : "bg-white/5 light:bg-slate-100 text-slate-300 light:text-slate-700 border-white/10 light:border-slate-200 hover:border-amber-500/40 hover:text-amber-300 light:hover:text-amber-700"
-                )}
-                title={isRtl ? "تفعيل وضع توليد الصور بالذكاء الاصطناعي" : "Toggle AI Image Generation Mode"}
-              >
-                <Paintbrush className={cn("w-3.5 h-3.5", imageGenMode ? "text-black" : "text-amber-400")} />
-                <span>
-                  {isRtl
-                    ? imageGenMode
-                      ? "وضع توليد الصور 🎨 (مفعّل)"
-                      : "توليد الصور 🎨"
-                    : imageGenMode
-                      ? "Image Gen Mode ON 🎨"
-                      : "Image Gen 🎨"}
-                </span>
-                {imageGenMode && <span className="w-2 h-2 rounded-full bg-black animate-pulse" />}
-              </button>
-
-              {/* Dedicated Search Mode Toggle Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  setWebSearchMode((prev) => !prev);
-                  if (!webSearchMode) {
-                    setImageGenMode(false);
-                  }
-                }}
-                className={cn(
-                  "flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full transition-all duration-200 border cursor-pointer select-none",
-                  webSearchMode
-                    ? "bg-amber-500 text-black border-amber-400 shadow-md shadow-amber-500/30 ring-2 ring-amber-400/40 font-bold"
-                    : "bg-white/5 light:bg-slate-100 text-slate-300 light:text-slate-700 border-white/10 light:border-slate-200 hover:border-amber-500/40 hover:text-amber-300 light:hover:text-amber-700"
-                )}
-                title={isRtl ? "تفعيل أو إلغاء وضع البحث الحي في الويب" : "Toggle Live Web Search Mode"}
-              >
-                <Globe className={cn("w-3.5 h-3.5", webSearchMode ? "animate-spin text-black" : "text-amber-400")} />
-                <span>
-                  {isRtl
-                    ? webSearchMode
-                      ? "بحث الويب (Google) 🌐 (مفعّل)"
-                      : "بحث في الويب 🌐"
-                    : webSearchMode
-                      ? "Web Search ON 🌐"
-                      : "Web Search 🌐"}
-                </span>
-                {webSearchMode && <span className="w-2 h-2 rounded-full bg-black animate-pulse" />}
-              </button>
-            </div>
-
-            <span className="text-[10px] text-slate-400 light:text-slate-500 hidden sm:inline-block">
-              {imageGenMode
-                ? (isRtl ? "🎨 توليد صور فائقة الجودة بالذكاء الاصطناعي مباشرة في الشات" : "🎨 AI Image Generation directly inside chat")
-                : webSearchMode
-                  ? (isRtl ? "⚡ بحث مباشر عبر Google ومصادر حية" : "⚡ Real-time Google Search grounding")
-                  : (isRtl ? "💬 دردشة ذكية + تحليل الصور 🖼️" : "💬 Smart Chat + Vision analysis 🖼️")}
-            </span>
-          </div>
-
-          {/* Attached Image Preview Card */}
-          {attachedImage && (
+        <footer className="glass flex-none p-3 sm:p-4 border-t border-[var(--border-color)]">
+          {/* Active Mode / Attachment Badges */}
+          {attachedImage ? (
             <div className="max-w-3xl mx-auto mb-2 flex items-center justify-between p-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs animate-in slide-in-from-bottom-2 duration-200">
               <div className="flex items-center gap-2.5 min-w-0">
                 <img
@@ -1259,11 +2348,11 @@ export default function Chat() {
                   className="w-10 h-10 object-cover rounded-xl border border-amber-500/40 flex-shrink-0"
                 />
                 <div className="min-w-0">
-                  <p className="font-bold text-amber-400 text-xs flex items-center gap-1">
-                    <ImagePlus className="w-3.5 h-3.5" />
+                  <p className="font-bold text-amber-500 text-xs flex items-center gap-1">
+                    <Camera className="w-3.5 h-3.5" />
                     <span>{isRtl ? "صورة مرفقة للتحليل الذكي 🖼️" : "Attached for AI Vision Analysis 🖼️"}</span>
                   </p>
-                  <p className="text-[11px] text-slate-400 truncate max-w-[200px] sm:max-w-md">
+                  <p className="text-[11px] text-[var(--text-secondary)] truncate max-w-[200px] sm:max-w-md">
                     {attachedImage.name}
                   </p>
                 </div>
@@ -1271,85 +2360,241 @@ export default function Chat() {
               <button
                 type="button"
                 onClick={() => setAttachedImage(null)}
-                className="p-1.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-red-400 transition-colors flex-shrink-0"
+                className="p-1.5 rounded-xl hover:bg-black/10 dark:hover:bg-white/10 text-[var(--text-secondary)] hover:text-red-500 transition-colors flex-shrink-0"
                 title={isRtl ? "إلغاء إرفاق الصورة" : "Remove attached image"}
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-          )}
+          ) : imageGenMode ? (
+            <div className="max-w-3xl mx-auto mb-2 flex items-center justify-between px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-600 dark:text-amber-300 animate-in fade-in slide-in-from-bottom-1">
+              <div className="flex items-center gap-2 font-medium">
+                <Paintbrush className="w-4 h-4 text-amber-500 animate-pulse" />
+                <span className="font-bold">{isRtl ? "🎨 وضع توليد الصور مفعّل" : "🎨 AI Image Gen Active"}</span>
+                <span className="opacity-80 hidden sm:inline">
+                  {isRtl ? "— اكتب وصف الصورة واضغط إرسال" : "— Describe image to create"}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setImageGenMode(false)}
+                className="p-1 rounded-lg hover:bg-amber-500/20 text-amber-600 dark:text-amber-300 transition-colors"
+                title={isRtl ? "إلغاء وضع توليد الصور" : "Cancel image mode"}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : webSearchMode ? (
+            <div className="max-w-3xl mx-auto mb-2 flex items-center justify-between px-3 py-1.5 rounded-xl bg-blue-500/15 border border-blue-500/40 text-xs text-blue-600 dark:text-blue-300 animate-in fade-in slide-in-from-bottom-1">
+              <div className="flex items-center gap-2 font-medium">
+                <Globe className="w-4 h-4 text-blue-500 animate-spin" />
+                <span className="font-bold">{isRtl ? "🌐 وضع البحث الحي في الويب مفعّل" : "🌐 Live Web Search Active"}</span>
+                <span className="opacity-80 hidden sm:inline">
+                  {isRtl ? "— سيتم البحث عبر Google وتوثيق المصادر" : "— Real-time search with grounded links"}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWebSearchMode(false)}
+                className="p-1 rounded-lg hover:bg-blue-500/20 text-blue-600 dark:text-blue-300 transition-colors"
+                title={isRtl ? "إلغاء وضع البحث في الويب" : "Cancel web search"}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : null}
 
           {/* Input Form */}
-          <form onSubmit={handleSubmit} className="max-w-3xl mx-auto relative flex items-center">
-            {/* Attach Image / File Picker Button (Right side before text on RTL or left on LTR) */}
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={sendMessageMutation.isPending}
-              aria-label={isRtl ? "إرفاق صورة للتحليل" : "Attach image"}
-              title={isRtl ? "إرفاق صورة للتحليل 🖼️ (أو اسحبها وأفلتها هنا)" : "Attach image 🖼️ (or drag & drop here)"}
-              className={cn(
-                "absolute right-2 h-9 w-9 rounded-xl transition-all duration-200 z-10",
-                attachedImage
-                  ? "bg-amber-500/30 text-amber-300 hover:bg-amber-500 hover:text-black"
-                  : "text-slate-400 hover:text-amber-400 hover:bg-white/10"
-              )}
-            >
-              <Paperclip className="w-4 h-4" />
-            </Button>
+          <form
+            onSubmit={(e) => {
+              if (isGenerating) {
+                e.preventDefault();
+                handleStopGeneration();
+                return;
+              }
+              handleSubmit(e);
+            }}
+            className={cn(
+              "max-w-3xl mx-auto relative flex items-center gap-1.5 sm:gap-2 bg-[var(--bg-card)] border border-[var(--border-color)] p-1.5 sm:p-2 rounded-[28px] shadow-lg transition-all focus-within:ring-2 focus-within:ring-amber-500/40 focus-within:border-[#F59E0B]/60",
+              (webSearchMode || imageGenMode || attachedImage) && "border-[#F59E0B]/60 ring-2 ring-[#F59E0B]/30 bg-amber-500/[0.03]",
+              isGenerating && "border-red-500/40 ring-1 ring-red-500/30"
+            )}
+            dir={isRtl ? "rtl" : "ltr"}
+          >
+            {/* Popover Action Sheet (+ Menu) */}
+            <div ref={actionMenuRef} className="relative flex-shrink-0 flex items-center">
+              {actionMenuOpen && (
+                <div
+                  className={cn(
+                    "absolute bottom-13 z-50 min-w-[260px] sm:min-w-[280px] bg-[var(--bg-card)] border border-[var(--border-color)] rounded-2xl p-2 shadow-2xl animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-150",
+                    isRtl ? "right-0" : "left-0"
+                  )}
+                  dir={isRtl ? "rtl" : "ltr"}
+                >
+                  <div className="px-3 py-1.5 text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between border-b border-[var(--border-color)] mb-1.5">
+                    <span>{isRtl ? "إضافات وأدوات M7 AI" : "M7 AI Tools & Actions"}</span>
+                    <Sparkles className="w-3.5 h-3.5 text-[#F59E0B]" />
+                  </div>
 
-            <Input
+                  <div className="space-y-1">
+                    {/* Option 1: Generate Image */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImageGenMode((prev) => !prev);
+                        if (!imageGenMode) setWebSearchMode(false);
+                        setActionMenuOpen(false);
+                        setTimeout(() => inputFieldRef.current?.focus(), 50);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-3 p-2.5 rounded-xl transition-all text-start group cursor-pointer",
+                        imageGenMode
+                          ? "bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/40"
+                          : "hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-main)]"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors",
+                          imageGenMode ? "bg-[#F59E0B] text-black shadow-sm" : "bg-amber-500/15 text-[#F59E0B] group-hover:bg-amber-500/25"
+                        )}
+                      >
+                        <Paintbrush className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[var(--text-main)]">
+                            {isRtl ? "🎨 توليد صورة" : "🎨 Generate Image"}
+                          </span>
+                          {imageGenMode && (
+                            <span className="text-[10px] bg-[#F59E0B] text-black font-bold px-1.5 py-0.5 rounded-full">
+                              {isRtl ? "مفعّل" : "Active"}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-[var(--text-secondary)] truncate mt-0.5">
+                          {isRtl ? "تصميم وتوليد صور فائقة الجودة" : "High quality AI image synthesis"}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Option 2: Live Web Search */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWebSearchMode((prev) => !prev);
+                        if (!webSearchMode) setImageGenMode(false);
+                        setActionMenuOpen(false);
+                        setTimeout(() => inputFieldRef.current?.focus(), 50);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-3 p-2.5 rounded-xl transition-all text-start group cursor-pointer",
+                        webSearchMode
+                          ? "bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/40"
+                          : "hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-main)]"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors",
+                          webSearchMode ? "bg-blue-500 text-white shadow-sm" : "bg-blue-500/15 text-blue-500 group-hover:bg-blue-500/25"
+                        )}
+                      >
+                        <Globe className={cn("w-4 h-4", webSearchMode && "animate-spin")} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[var(--text-main)]">
+                            {isRtl ? "🌐 بحث في الويب" : "🌐 Web Search"}
+                          </span>
+                          {webSearchMode && (
+                            <span className="text-[10px] bg-blue-500 text-white font-bold px-1.5 py-0.5 rounded-full">
+                              {isRtl ? "مفعّل" : "Active"}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-[var(--text-secondary)] truncate mt-0.5">
+                          {isRtl ? "جلب أحدث المعلومات الحية من Google" : "Real-time Google search grounding"}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Option 3: Attach Image / Camera */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-main)] transition-all text-start group cursor-pointer"
+                    >
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/15 text-emerald-500 group-hover:bg-emerald-500/25 flex items-center justify-center flex-shrink-0 transition-colors">
+                        <Camera className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs font-bold text-[var(--text-main)] block">
+                          {isRtl ? "📷 إرفاق صورة" : "📷 Attach Image"}
+                        </span>
+                        <p className="text-[10px] text-[var(--text-secondary)] truncate mt-0.5">
+                          {isRtl ? "رفع صورة من جهازك أو فتح الكاميرا" : "Upload photo or snap camera"}
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* The Enhanced (+) Button */}
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={() => setActionMenuOpen((prev) => !prev)}
+                disabled={isGenerating}
+                aria-label={isRtl ? "قائمة الإضافات والخيارات (+)" : "Action menu (+)"}
+                title={isRtl ? "خيارات وإضافات الذكاء الاصطناعي (+)" : "AI Actions & Tools (+)"}
+                className={cn(
+                  "h-9 w-9 min-w-[36px] flex-shrink-0 rounded-full transition-all duration-200 flex items-center justify-center font-bold text-amber-500 hover:text-black hover:bg-[#F59E0B] bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 active:scale-95 shadow-sm cursor-pointer",
+                  actionMenuOpen && "bg-[#F59E0B] text-black rotate-45 border-[#F59E0B] shadow-md shadow-amber-500/20",
+                  (imageGenMode || webSearchMode || attachedImage) && !actionMenuOpen && "ring-2 ring-amber-400/50 bg-amber-500/20 text-amber-600 dark:text-amber-300"
+                )}
+              >
+                <Plus className="w-5 h-5 transition-transform duration-200 stroke-[2.5]" />
+              </Button>
+            </div>
+
+            {/* Flexible Input Text Field */}
+            <input
+              ref={inputFieldRef}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={
-                attachedImage
+                isGenerating
                   ? (isRtl
-                      ? "🖼️ اكتب سؤالك حول هذه الصورة (أو اضغط إرسال للتحليل التلقائي)..."
-                      : "🖼️ Ask about this image (or press send for instant analysis)...")
-                  : imageGenMode
+                      ? "⏹️ جاري توليد الرد... اضغط زر الإيقاف للإلغاء فوراً"
+                      : "⏹️ Generating response... Click stop to abort")
+                  : attachedImage
                     ? (isRtl
-                        ? "🎨 صف الصورة التي تريد توليدها (مثل: اصنع صورة لغروب شمس فوق الجبال)..."
-                        : "🎨 Describe image to generate (e.g. futuristic cyberpunk city)...")
-                    : webSearchMode
+                        ? "🖼️ اكتب سؤالك حول هذه الصورة (أو اضغط إرسال للتحليل)..."
+                        : "🖼️ Ask about this image (or press send for analysis)...")
+                    : imageGenMode
                       ? (isRtl
-                          ? "🌐 اكتب ما تريد البحث عنه في الويب (مثل: الفائز بالكرة الذهبية 2024)..."
-                          : "🌐 Type what you want to search on the live web (e.g. 2024 Ballon d'Or winner)...")
-                      : (isRtl
-                          ? "اكتب رسالتك، اطلب صورة (مثل: اصنع صورة...)، أو أرفق صورة للتحليل..."
-                          : "Type message, ask for image, or attach image to analyze...")
+                          ? "🎨 صف الصورة التي تريد توليدها بدقة..."
+                          : "🎨 Describe image to generate...")
+                      : webSearchMode
+                        ? (isRtl
+                            ? "🌐 اكتب ما تريد البحث عنه في الويب مباشرة..."
+                            : "🌐 Type what to search on live web...")
+                        : (isRtl
+                            ? "اكتب رسالتك، أو اضغط (+) لأدوات وتوليد الصور..."
+                            : "Type a message, or click (+) for tools & images...")
               }
               className={cn(
-                "pl-36 pr-13 h-13 bg-card/80 light:bg-white border-white/10 light:border-slate-300 hover:border-white/20 focus-visible:ring-amber-500/50 text-sm sm:text-base rounded-2xl shadow-xl text-white light:text-slate-900 placeholder:text-slate-500 transition-all",
-                (webSearchMode || imageGenMode || attachedImage) && "border-amber-500/60 ring-2 ring-amber-500/30 bg-amber-500/[0.03]"
+                "flex-1 min-w-0 h-10 px-2 sm:px-3 bg-transparent border-0 outline-none focus:outline-none focus:ring-0 text-sm sm:text-base text-[var(--text-main)] placeholder:text-[var(--text-secondary)] transition-all",
+                isRtl ? "text-right" : "text-left"
               )}
-              disabled={sendMessageMutation.isPending}
+              disabled={isGenerating}
             />
-
-            {/* Direct Web Search Button */}
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              onClick={(e) => {
-                e.preventDefault();
-                if (!inputValue.trim() || sendMessageMutation.isPending) return;
-                handleSend(inputValue, undefined, true);
-              }}
-              disabled={!inputValue.trim() || sendMessageMutation.isPending}
-              aria-label="بحث في الويب"
-              title={isRtl ? "بحث فوري في الويب 🔍 (Google Search)" : "Instant Web Search 🔍"}
-              className={cn(
-                "absolute left-24 h-9 w-9 rounded-xl transition-all duration-200",
-                inputValue.trim()
-                  ? "bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-black shadow-sm"
-                  : "text-slate-500 hover:text-amber-400 hover:bg-white/10",
-                "disabled:opacity-40"
-              )}
-            >
-              <Search className="w-4 h-4" />
-            </Button>
 
             {/* Voice Dictation Button */}
             <Button
@@ -1357,45 +2602,56 @@ export default function Chat() {
               size="icon"
               variant="ghost"
               onClick={handleVoiceToggle}
-              disabled={sendMessageMutation.isPending}
+              disabled={isGenerating}
               aria-label={isListening ? "إيقاف الاستماع" : "بدء المحادثة الصوتية"}
               title={isListening ? (isRtl ? "إيقاف الاستماع" : "Stop listening") : (isRtl ? "تحدث صوتياً" : "Speak")}
               className={cn(
-                "absolute left-14 h-9 w-9 rounded-full transition-all duration-200",
+                "h-9 w-9 min-w-[36px] flex-shrink-0 rounded-full transition-all duration-200 flex items-center justify-center",
                 isListening
-                  ? "bg-red-500/20 text-red-400 ring-2 ring-red-400/30 animate-pulse hover:bg-red-500/30"
-                  : "text-slate-400 hover:text-amber-400 hover:bg-white/10",
+                  ? "bg-red-500/20 text-red-500 ring-2 ring-red-400/30 animate-pulse hover:bg-red-500/30"
+                  : "text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/10",
                 "disabled:opacity-50"
               )}
             >
               <Mic className="w-4 h-4" />
             </Button>
 
-            {/* Submit / Send Button */}
-            <Button
-              type="submit"
-              size="icon"
-              disabled={(!inputValue.trim() && !attachedImage) || sendMessageMutation.isPending}
-              className={cn(
-                "absolute left-2 h-9 w-9 rounded-xl text-black shadow-md transition-transform active:scale-95 disabled:opacity-50",
-                imageGenMode
-                  ? "bg-amber-400 hover:bg-amber-300 shadow-amber-400/30"
-                  : webSearchMode
-                    ? "bg-amber-400 hover:bg-amber-300 shadow-amber-400/30"
-                    : "bg-amber-500 hover:bg-amber-400 shadow-amber-500/20"
-              )}
-              title={isRtl ? (imageGenMode ? "توليد الصورة 🎨" : webSearchMode ? "إرسال والبحث في الويب" : "إرسال الرسالة") : (imageGenMode ? "Generate Image 🎨" : webSearchMode ? "Send & Search Web" : "Send message")}
-            >
-              {sendMessageMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin text-black" />
-              ) : imageGenMode ? (
-                <Paintbrush className="w-4 h-4" />
-              ) : webSearchMode ? (
-                <Globe className="w-4 h-4 animate-pulse" />
-              ) : (
-                <Send className="w-4 h-4 rtl:-scale-x-100" />
-              )}
-            </Button>
+            {/* Submit / Stop Button */}
+            {isGenerating ? (
+              <Button
+                type="button"
+                size="icon"
+                onClick={handleStopGeneration}
+                className="h-10 w-10 min-w-[40px] flex-shrink-0 rounded-full text-white bg-red-600 hover:bg-red-500 shadow-lg shadow-red-600/40 ring-2 ring-red-400/50 transition-all active:scale-95 animate-pulse cursor-pointer flex items-center justify-center border-0"
+                title={isRtl ? "إيقاف توليد الرد ⏹️ (Stop)" : "Stop generating response ⏹️"}
+                aria-label={isRtl ? "إيقاف التوليد" : "Stop generation"}
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!inputValue.trim() && !attachedImage}
+                className={cn(
+                  "h-10 w-10 min-w-[40px] flex-shrink-0 rounded-full !text-black shadow-md transition-transform active:scale-95 disabled:opacity-50 cursor-pointer flex items-center justify-center border-0",
+                  imageGenMode
+                    ? "bg-[#F59E0B] hover:bg-[#F59E0B]/90 shadow-amber-400/30"
+                    : webSearchMode
+                      ? "bg-[#F59E0B] hover:bg-[#F59E0B]/90 shadow-amber-400/30"
+                      : "bg-[#F59E0B] hover:bg-[#F59E0B]/90 shadow-amber-500/20"
+                )}
+                title={isRtl ? (imageGenMode ? "توليد الصورة 🎨" : webSearchMode ? "إرسال والبحث في الويب" : "إرسال الرسالة") : (imageGenMode ? "Generate Image 🎨" : webSearchMode ? "Send & Search Web" : "Send message")}
+              >
+                {imageGenMode ? (
+                  <Paintbrush className="w-4 h-4 text-black" />
+                ) : webSearchMode ? (
+                  <Globe className="w-4 h-4 animate-pulse text-black" />
+                ) : (
+                  <Send className="w-4 h-4 rtl:-scale-x-100 text-black" />
+                )}
+              </Button>
+            )}
           </form>
 
           {(isListening || isSpeaking || speechError) && (
@@ -1403,10 +2659,10 @@ export default function Chat() {
               className={cn(
                 "mt-2 flex items-center justify-center gap-1.5 text-xs",
                 speechError
-                  ? "text-red-400"
+                  ? "text-red-500"
                   : isListening
-                    ? "text-red-400"
-                    : "text-amber-400"
+                    ? "text-red-500"
+                    : "text-amber-500"
               )}
               aria-live="polite"
             >
@@ -1431,7 +2687,7 @@ export default function Chat() {
           )}
 
           <div className="text-center mt-2">
-            <p className="text-[10px] text-slate-500">
+            <p className="text-[10px] text-[var(--text-secondary)]">
               {isRtl
                 ? "قد يخطئ M7 AI أحياناً. يُرجى التحقق من المعلومات الهامة."
                 : "M7 AI may make mistakes. Verify important info."}
@@ -1462,7 +2718,7 @@ export default function Chat() {
                 className="p-2.5 rounded-xl bg-white/10 hover:bg-red-500 text-white transition-all"
                 title={isRtl ? "إغلاق" : "Close"}
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
