@@ -14,12 +14,146 @@ import {
   conversationsTable,
   userMemoryTable,
 } from "@workspace/db";
+import { AI_PERSONAS, PersonaId } from "../personas";
 
 const router = Router();
 const MEMORY_TAG_RE = /<M7MEMORY>([\s\S]*?)<\/M7MEMORY>/g;
 
 // تتبع انتهاء حصة أداة البحث لتجنب أخطاء 429 وتخطيها تلقائياً نحو البحث الحي
 let googleSearchGroundingQuotaExhaustedUntil = 0;
+
+// تتبع استهلاك الصور اليومي لكل مستخدم مع التجديد التلقائي بعد 24 ساعة (24-Hour Daily Image Limit Tracker)
+interface UserImageUsageRecord {
+  count: number;
+  firstUsedAt: number;
+  lastUsedAt: number;
+}
+
+const userImageUsageMap = new Map<string, UserImageUsageRecord>();
+const DURATION_24H = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+function getUserImageUsage(userId: string): {
+  count: number;
+  firstUsedAt: number | null;
+  lastUsedAt: number | null;
+  resetAt: number | null;
+  remainingMs: number;
+  remainingHours: number;
+  remainingMinutes: number;
+} {
+  const now = Date.now();
+  const entry = userImageUsageMap.get(userId);
+  if (!entry) {
+    return {
+      count: 0,
+      firstUsedAt: null,
+      lastUsedAt: null,
+      resetAt: null,
+      remainingMs: 0,
+      remainingHours: 0,
+      remainingMinutes: 0,
+    };
+  }
+
+  // If 24 hours passed since first usage -> automatically reset counter!
+  if (now - entry.firstUsedAt >= DURATION_24H) {
+    userImageUsageMap.delete(userId);
+    return {
+      count: 0,
+      firstUsedAt: null,
+      lastUsedAt: null,
+      resetAt: null,
+      remainingMs: 0,
+      remainingHours: 0,
+      remainingMinutes: 0,
+    };
+  }
+
+  const resetAt = entry.firstUsedAt + DURATION_24H;
+  const remainingMs = Math.max(0, resetAt - now);
+  const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
+  const remainingMinutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+
+  return {
+    count: entry.count,
+    firstUsedAt: entry.firstUsedAt,
+    lastUsedAt: entry.lastUsedAt,
+    resetAt,
+    remainingMs,
+    remainingHours,
+    remainingMinutes,
+  };
+}
+
+function incrementDailyImageCount(userId: string): number {
+  const now = Date.now();
+  const existing = getUserImageUsage(userId);
+  const newCount = existing.count + 1;
+  const firstUsedAt = existing.firstUsedAt || now;
+  const updated: UserImageUsageRecord = {
+    count: newCount,
+    firstUsedAt,
+    lastUsedAt: now,
+  };
+  userImageUsageMap.set(userId, updated);
+  return newCount;
+}
+
+function getDailyImageCount(userId: string): number {
+  return getUserImageUsage(userId).count;
+}
+
+function getUserAuth(req: any): { userId: string; plan: "free" | "pro" } {
+  const auth = req.headers.authorization;
+  const headerPlan = req.headers["x-user-plan"];
+  let userId = "anonymous";
+  let plan: "free" | "pro" = headerPlan === "pro" ? "pro" : "free";
+
+  if (auth?.startsWith("Bearer ") && auth.length > 7) {
+    const raw = decodeURIComponent(auth.slice(7));
+    if (raw.includes(":")) {
+      const parts = raw.split(":");
+      userId = parts[0] || "anonymous";
+      if (parts[1] === "pro") plan = "pro";
+    } else {
+      userId = raw;
+    }
+  }
+
+  if (req.body?.userPlan === "pro") {
+    plan = "pro";
+  }
+
+  return { userId, plan };
+}
+
+// ── GET /api/chat/usage ──────────────────────────────────────────────────────
+router.get("/usage", async (req, res) => {
+  const { userId, plan } = getUserAuth(req);
+  try {
+    const facts = await db
+      .select()
+      .from(userMemoryTable)
+      .where(eq(userMemoryTable.userId, userId));
+
+    const memoryCount = facts.length;
+    const memoryMax = plan === "pro" ? 1000 : 100;
+    const dailyImagesUsed = getDailyImageCount(userId);
+    const dailyImagesMax = plan === "pro" ? 999999 : 3;
+
+    res.json({
+      plan,
+      memoryCount,
+      memoryMax,
+      dailyImagesUsed,
+      dailyImagesMax,
+      isUnlimitedImages: plan === "pro",
+    });
+  } catch (err) {
+    console.error("usage query error:", err);
+    res.status(500).json({ error: "فشل جلب تفاصيل الاستخدام" });
+  }
+});
 
 interface MemoryFact {
   key: string;
@@ -177,6 +311,7 @@ async function buildHighQualityImagePrompt(userPrompt: string, ai: GoogleGenAI |
       "gemini-3.7-flash",
       "gemini-flash-latest",
       "gemini-3.1-flash-lite",
+      "gemini-2.5-flash",
     ];
     for (const pModel of promptModels) {
       try {
@@ -291,13 +426,30 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallbackValue?: T): Pro
 
 /**
  * دالة مساعدة لتنفيذ استدعاءات الذكاء الاصطناعي مع مهلة زمنية دقيقة
- * وتمرير الأخطاء فوراً للانتقال السريع للنموذج البديل دون تأخير
+ * وتكرار المحاولة الذكي عند وجود ضغط لحظي (503 / 429 / UNAVAILABLE)
  */
 async function executeWithBackoff<T>(
   operation: () => Promise<T>,
-  timeoutMs: number
+  timeoutMs: number,
+  maxRetries: number = 2
 ): Promise<T> {
-  return await withTimeout(operation(), timeoutMs);
+  let attempt = 0;
+  while (attempt <= maxRetries) {
+    try {
+      return await withTimeout(operation(), timeoutMs);
+    } catch (err: any) {
+      attempt++;
+      const errStr = String(err?.message || err?.status || err || "");
+      const isTransient = /503|UNAVAILABLE|high demand|429|RESOURCE_EXHAUSTED|rate limit|fetch failed|ECONNRESET|ETIMEDOUT/i.test(errStr);
+      if (attempt > maxRetries || !isTransient) {
+        throw err;
+      }
+      // Wait a short backoff period with jitter before retrying
+      const delayMs = Math.min(1200, 300 * Math.pow(1.6, attempt - 1) + Math.random() * 150);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error("Execution failed after retries");
 }
 
 /**
@@ -555,20 +707,67 @@ function extractSuggestionsTags(text: string): { cleanText: string; suggestions:
 }
 
 /**
- * توليد اقتراحات ذكية متوافقة مع السياق واللغة في حال عدم توليد النموذج لها
+ * كاشف دقيق للغة النص لتحديد ما إذا كان الرد بالإنجليزية أو العربية
  */
-function generateFallbackSuggestions(text: string, isEnglish: boolean, isImage: boolean, isClarification: boolean): string[] {
+function detectTextLanguage(text: string): "en" | "ar" {
+  const clean = text.replace(/<[^>]*>/g, "").replace(/```[\s\S]*?```/g, "");
+  const arabicLetters = (clean.match(/[\u0600-\u06FF]/g) || []).length;
+  const latinLetters = (clean.match(/[a-zA-Z]/g) || []).length;
+
+  if (latinLetters > 0 && arabicLetters === 0) {
+    return "en";
+  }
+  if (arabicLetters > 0 && arabicLetters >= latinLetters * 0.3) {
+    return "ar";
+  }
+  return latinLetters > arabicLetters ? "en" : "ar";
+}
+
+/**
+ * التحقق الصارم من تطابق لغة الاقتراحات مع لغة الرد ومنع التضارب اللغوي
+ */
+function validateAndFilterSuggestions(
+  suggestions: string[],
+  targetLanguage: "en" | "ar"
+): string[] {
+  return suggestions.filter((s) => {
+    if (!s || typeof s !== "string") return false;
+    const arabicLetters = (s.match(/[\u0600-\u06FF]/g) || []).length;
+    const latinLetters = (s.match(/[a-zA-Z]/g) || []).length;
+
+    if (targetLanguage === "en") {
+      // الرد بالإنجليزي: يمنع منعاً باتاً وجود أي حروف عربية في الاقتراح
+      return arabicLetters === 0 && (latinLetters > 0 || s.trim().length > 0);
+    } else {
+      // الرد بالعربي: يجب أن يحتوي الاقتراح على العربية أو لا يكون إنجليزياً بحتاً
+      return arabicLetters > 0 || latinLetters === 0;
+    }
+  });
+}
+
+/**
+ * توليد اقتراحات ذكية متوافقة مع السياق واللغة في حال عدم توليد النموذج لها أو حدوث تضارب لغوي
+ */
+function generateFallbackSuggestions(
+  text: string,
+  targetLang: "en" | "ar",
+  isImage: boolean,
+  isClarification: boolean
+): string[] {
+  const isEnglish = targetLang === "en";
+  const lower = text.toLowerCase();
+
   if (isClarification) {
     return isEnglish
       ? [
           "Explain in more detail 💡",
-          "Search recent tech news 🌐",
-          "Create an AI artwork 🎨",
+          "What are your capabilities? 🚀",
+          "Search latest tech updates 🌐",
         ]
       : [
           "توضيح السؤال بمزيد من التفصيل 💡",
+          "ما هي أبرز قدراتك ومهامك؟ 🚀",
           "أحدث أخبار التقنية والذكاء الاصطناعي 🌐",
-          "توليد صورة فنية بالذكاء الاصطناعي 🎨",
         ];
   }
 
@@ -586,18 +785,61 @@ function generateFallbackSuggestions(text: string, isEnglish: boolean, isImage: 
         ];
   }
 
+  // سياق البرمجة والأكواد
+  if (
+    lower.includes("```") ||
+    lower.includes("code") ||
+    lower.includes("function") ||
+    lower.includes("كود") ||
+    lower.includes("برمج")
+  ) {
+    return isEnglish
+      ? [
+          "Explain how this code works 💻",
+          "Add error handling & tests 🛡️",
+          "Optimize for performance ⚡",
+        ]
+      : [
+          "اشرح طريقة عمل الكود بالتفصيل 💻",
+          "أضف معالجة للأخطاء واختبارات 🛡️",
+          "تحسين الأداء والكفاءة ⚡",
+        ];
+  }
+
+  // سياق المقارنة والتحليل
+  if (
+    lower.includes("vs") ||
+    lower.includes("compare") ||
+    lower.includes("difference") ||
+    lower.includes("مقارنة") ||
+    lower.includes("فروقات")
+  ) {
+    return isEnglish
+      ? [
+          "Give a side-by-side comparison 📊",
+          "Which option is recommended? 💡",
+          "Summarize key takeaways 📋",
+        ]
+      : [
+          "مقارنة تفصيلية بين الخيارات 📊",
+          "أيهما الخيار الأفضل والأنسب؟ 💡",
+          "لخص لي أهم الفروقات 📋",
+        ];
+  }
+
+  // اقتراحات عامة باللغة المستهدفة
   if (isEnglish) {
     return [
-      "Tell me more details 🔍",
-      "What are the best practices? 💡",
-      "Summarize in 3 quick points 📋",
+      "What are your technical capabilities? 🚀",
+      "How can you help with coding? 💡",
+      "Explain in more detail 📋",
     ];
   }
 
   return [
-    "أخبرني بمزيد من التفاصيل 🔍",
-    "ما هي أهم النصائح والتطبيقات؟ 💡",
-    "لخص لي في 3 نقاط سريعة 📋",
+    "ما هي قدراتك التقنية؟ 🚀",
+    "كيف يمكنك مساعدتي في البرمجة؟ 💡",
+    "اشرح بمزيد من التفصيل 📋",
   ];
 }
 
@@ -648,10 +890,12 @@ async function generateSmartConversationTitle(
 
   // 1. محاولة توليد عنوان ذكي باستخدام الذكاء الاصطناعي السريع
   if (ai && conversationSample.length > 0) {
-    try {
-      const titlePromise = ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: `You are an expert conversation titler.
+    const titleModels = ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    for (const tModel of titleModels) {
+      try {
+        const titlePromise = ai.models.generateContent({
+          model: tModel,
+          contents: `You are an expert conversation titler.
 Analyze the user's conversation intent and generate a crisp, meaningful title (STRICTLY 2 to 4 words).
 STRICT RULES:
 1. NEVER use generic greetings (e.g. "مرحبا", "أهلاً", "Hello", "Hi").
@@ -661,23 +905,24 @@ STRICT RULES:
 
 User Messages: "${conversationSample.slice(0, 350)}"
 ${lastAssistantText ? `Assistant Context: "${lastAssistantText.slice(0, 200)}"` : ""}`,
-        config: {
-          temperature: 0.2,
-        },
-      });
+          config: {
+            temperature: 0.2,
+          },
+        });
 
-      const res = await withTimeout(titlePromise, 4000);
-      let title = res.text?.replace(/["'`*\n]/g, "").trim();
-      if (title && title.length >= 3 && title.length <= 50) {
-        const lower = title.toLowerCase();
-        if (!GREETING_WORDS.has(lower)) {
-          if (isImageGen && !title.includes("🎨")) title += " 🎨";
-          else if (isWebSearch && !title.includes("🌐")) title += " 🌐";
-          return title;
+        const res = await withTimeout(titlePromise, 3500);
+        let title = res.text?.replace(/["'`*\n]/g, "").trim();
+        if (title && title.length >= 3 && title.length <= 50) {
+          const lower = title.toLowerCase();
+          if (!GREETING_WORDS.has(lower)) {
+            if (isImageGen && !title.includes("🎨")) title += " 🎨";
+            else if (isWebSearch && !title.includes("🌐")) title += " 🌐";
+            return title;
+          }
         }
+      } catch {
+        continue;
       }
-    } catch {
-      // Graceful fallback
     }
   }
 
@@ -725,9 +970,9 @@ router.post("/", async (req: Request, res) => {
 
     const { messages, conversationId } = parsed.data;
     const lastMessage = messages[messages.length - 1];
-    const userId = req.headers.authorization?.startsWith("Bearer ")
-      ? req.headers.authorization.slice(7)
-      : "anonymous";
+    const { userId, plan } = getUserAuth(req);
+    const userTier: "free" | "pro" = plan === "pro" ? "pro" : "free";
+    const isProTier = userTier === "pro";
 
     const userPrompt = lastMessage?.content || "";
     const attachedImage = (req.body as any)?.image as { data: string; mimeType: string } | undefined;
@@ -743,6 +988,56 @@ router.post("/", async (req: Request, res) => {
         userPrompt.trim()
       );
 
+    // التحقق من حدود باقة الصور اليومية (Tier Limit: 5 images/day for Free, Unlimited for PRO)
+    const isRequestingImageFeature = isImageGenerationIntent || Boolean(attachedImage);
+    const isEnglishPrompt = /[a-zA-Z]{4,}/.test(userPrompt);
+
+    if (isRequestingImageFeature && plan === "free") {
+      const usageInfo = getUserImageUsage(userId);
+      if (usageInfo.count >= 5) {
+        const timeAr =
+          usageInfo.remainingHours > 0
+            ? `${usageInfo.remainingHours} ساعة و ${usageInfo.remainingMinutes} دقيقة`
+            : `${usageInfo.remainingMinutes} دقيقة`;
+        const timeEn =
+          usageInfo.remainingHours > 0
+            ? `${usageInfo.remainingHours}h ${usageInfo.remainingMinutes}m`
+            : `${usageInfo.remainingMinutes}m`;
+
+        const paywallMessage = isEnglishPrompt
+          ? `🔒 **Daily Image Limit Consumed (5/5 images)**\n\nYou have used all 5 available images in the **Free Plan** for this 24-hour cycle.\n\n⏳ **Automatic Renewal:** in **${timeEn}** (5 free images will renew automatically).\n\n👑 **Need instant unlimited access?**\nUpgrade to **M7 AI PRO ($5/month)** to unlock:\n• 🔥 **Unlimited AI Image Generation & Attachments** with zero waiting\n• ⚡ **Turbo & Higher Precision Reasoning**\n• 🧠 **Expanded Long-Term Memory (up to 1,000 facts)**\n• 🌐 **Full Web Search & Voice Audio Integration**\n\nClick the Upgrade button below to activate PRO instantly!`
+          : `🔒 **تم استهلاك الحد اليومي المتاح (5 من 5 صور)**\n\nلقد استهلكت كامل حصتك المتاحة في **الباقة المجانية** (5 صور خلال 24 ساعة).\n\n⏳ **موعد التجديد التلقائي القادم:** بعد **${timeAr}** (سيتم تجديد 5 صور مجانية جديدة تلقائياً).\n\n👑 **تريد الاستمرار فوراً دون انتظار؟**\nقم بالترقية إلى **باقة M7 PRO (بسعر 5$ شهرياً فقط)** للحصول على:\n• 🔥 **توليد وإرسال صور لا نهائي وبدون أي انتظار**\n• ⚡ **إجابات أسرع وأعلى دقة مع أولوية معالجة قصوى**\n• 🧠 **ذاكرة تخزين موسعة تصل إلى 1000 معلومة**\n• 🌐 **وصول كامل لمحرك البحث الصوتي والويب الحي**\n\nاضغط على زر الترقية أدناه للتفعيل الفوري!`;
+
+        const paywallSuggestions = isEnglishPrompt
+          ? [
+              "Upgrade to PRO ($5/mo) 👑",
+              "What are M7 PRO features? 💡",
+              "How to unlock unlimited images? 🎨",
+            ]
+          : [
+              "ترقية إلى باقة PRO (5$) 👑",
+              "ما هي مميزات باقة M7 PRO؟ 💡",
+              "كيف أحصل على صور غير محدودة؟ 🎨",
+            ];
+
+        res.json({
+          conversationId: conversationId?.trim() || null,
+          message: paywallMessage,
+          role: "assistant",
+          imageUrl: null,
+          isWebSearch: false,
+          isImageGeneration: false,
+          searchSources: [],
+          suggestions: paywallSuggestions,
+          limitReached: true,
+          limitType: "images",
+          remainingMs: usageInfo.remainingMs,
+          resetAt: usageInfo.resetAt,
+        });
+        return;
+      }
+    }
+
     // 2. الذكاء التلقائي والبحث الذاتي (Auto Grounding / Web Search)
     const userRequestedWebSearchExplicit = Boolean(
       (req.body as any)?.useWebSearch || (req.body as any)?.webSearch
@@ -756,11 +1051,39 @@ router.post("/", async (req: Request, res) => {
       );
     const userRequestedWebSearch = userRequestedWebSearchExplicit || (hasLiveSearchKeywords && !attachedImage && !isImageGenerationIntent);
 
-    // 3. الذاكرة الدائمة والذاكرة العابرة معطلة بالكامل لضمان عزل تام بنسبة 100% بين الشاتات
-    let savedFacts: any[] = [];
-    let crossChatContextText = "";
-    const memoryText = "";
-    const fullMemorySection = "";
+    // 3. تحديد شخصية الذكاء الاصطناعي المختارة والتحقق من صلاحية البرو
+    const requestedPersonaId = ((req.body as any)?.personaId as PersonaId) || "general";
+    let activePersona = AI_PERSONAS[requestedPersonaId] || AI_PERSONAS.general;
+    // إذا اختار شخصية حصرية وهو في باقة مجانية نرجعه للعام
+    if (activePersona.isPro && plan !== "pro") {
+      activePersona = AI_PERSONAS.general;
+    }
+
+    let personaPromptSection = "";
+    if (activePersona.id !== "general") {
+      personaPromptSection = `\n\n0. ACTIVE EXCLUSIVE AI PERSONA DIRECTIVES (الشخصية التخصصية الحصرية النشطة: ${activePersona.nameAr} / ${activePersona.nameEn}):\n${activePersona.systemPromptModifierAr}\n\nEnglish Persona Instructions:\n${activePersona.systemPromptModifierEn}\n\nSTRICTLY ADOPT THIS PERSONA EXPERTISE, TONE, DOMAIN MASTERY, AND PERSPECTIVE THROUGHOUT YOUR ENTIRE RESPONSE!`;
+    }
+
+    // 4. جلب الذاكرة السياقية للمستخدم طبقاً لحدود الباقة (100 معلومة للباقة المجانية و1000 لباقة PRO)
+    let fullMemorySection = "";
+    try {
+      const memoryLimit = plan === "pro" ? 1000 : 100;
+      const userFacts = await db
+        .select()
+        .from(userMemoryTable)
+        .where(eq(userMemoryTable.userId, userId))
+        .orderBy(userMemoryTable.key)
+        .limit(memoryLimit);
+
+      if (userFacts.length > 0) {
+        const formattedFacts = userFacts
+          .map((f) => `- ${f.label} (${f.key}): ${f.value}`)
+          .join("\n");
+        fullMemorySection = `\n\n12. USER CONTEXT & PERSISTENT MEMORY FACTS (سياق ومعلومات المستخدم المحفوظة):\n${formattedFacts}\nUse these saved facts seamlessly when answering the user's queries to provide personalized, deeply coherent, and tailored responses.`;
+      }
+    } catch (memReadErr) {
+      console.warn("Could not load user memory facts:", memReadErr);
+    }
 
     const searchInstruction = userRequestedWebSearch
       ? `\n\n4. WEB SEARCH & GROUNDING MODE (وضع البحث الحي المباشر في الويب عبر Google Search):
@@ -781,7 +1104,7 @@ router.post("/", async (req: Request, res) => {
       : "";
 
     const currentDateStr = "2026-08-25";
-    const supremeSystemPrompt = `You are M7 AI, an advanced, highly intelligent, articulate, and direct AI assistant created by M7 TECNO.
+    const supremeSystemPrompt = `You are M7 AI, an advanced, highly intelligent, articulate, and direct AI assistant created by M7 TECNO.${personaPromptSection}
 CURRENT TIMELINE: Today is ${currentDateStr} (Year 2026). Treat 2024, 2025, and 2026 as current and recent events.
 
 CRITICAL OPERATIONAL RULES & INTELLIGENCE DIRECTIVES:
@@ -833,8 +1156,18 @@ CRITICAL OPERATIONAL RULES & INTELLIGENCE DIRECTIVES:
 
 10. INTERACTIVE QUICK SUGGESTIONS (أزرار الاقتراحات السريعة التفاعلية):
    - At the very end of EVERY response, attach 2 to 3 concise, relevant follow-up suggestions or questions for what the user might ask next.
-   - Format them strictly as a valid JSON array within the tag: <M7SUGGESTIONS>["اقتراح 1 🚀", "اقتراح 2 💡", "اقتراح 3 📋"]</M7SUGGESTIONS>
+   - MANDATORY LANGUAGE CONSISTENCY: The suggestions MUST strictly match the exact language of your response:
+     • When responding in English: Suggestions MUST be 100% in English (e.g. <M7SUGGESTIONS>["What are your technical capabilities? 🚀", "How can you assist with coding? 💡", "Explain in more detail 📋"]</M7SUGGESTIONS>). NEVER use Arabic text or prompts when replying in English.
+     • When responding in Arabic: Suggestions MUST be 100% in Arabic (e.g. <M7SUGGESTIONS>["ما هي قدراتك التقنية؟ 🚀", "كيف يمكنك مساعدتي في البرمجة؟ 💡", "اشرح بمزيد من التفصيل 📋"]</M7SUGGESTIONS>).
+     • When responding in any other language: Suggestions MUST match that language.
+   - Format them strictly as a valid JSON array within the tag: <M7SUGGESTIONS>["...", "..."]</M7SUGGESTIONS>
    - Keep each suggestion short (under 7 words) with a fitting emoji.
+
+11. AUDIO & VOICE INPUT PROCESSING (التعامل الكامل والدقيق مع المدخلات الصوتية والتسجيلات):
+   - Automatic Language Detection (التعرف التلقائي الفوري): When processing any audio file or microphone input, immediately and automatically detect the spoken language (Arabic, English, French, Spanish, or any other global language).
+   - High-Precision Speech Transcription (تحويل الصوت إلى نص بدقة عالية): Accurately transcribe the spoken audio into text in the exact language spoken, adhering strictly to its original alphabet and native script.
+   - Zero Unsolicited Translation (الالتزام بلغة الصوت الأصلية): Do NOT translate the transcribed audio into another language unless the user explicitly requests translation.
+   - Multilingual Audio Mastery (إتقان التعامل مع التسجيلات متعددة اللغات): If the user speaks multiple languages within the same recording, accurately transcribe each portion in its respective native language and script.
 ${fullMemorySection}`;
 
     const ai = getAiClient();
@@ -864,6 +1197,9 @@ ${fullMemorySection}`;
       const encodedPrompt = encodeURIComponent(highQualityPrompt);
       const randomSeed = Math.floor(Math.random() * 9000000) + 1000000;
       generatedImageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${randomSeed}&model=flux&enhance=true`;
+
+      // تسجيل استهلاك الصورة
+      incrementDailyImageCount(userId);
 
       // 3. استخراج اسم الموضوع لتقديمه في الرد بأسلوب أنيق ومختصر جداً مع إيموجيز
       const subjectPreview = userPrompt
@@ -902,20 +1238,41 @@ ${fullMemorySection}`;
 
       const contents = sanitizeForGemini(messages, attachedImage, liveWebContext);
 
-      // قائمة النماذج الصالحة والمتوافقة مع SDK وGoogle Search Grounding
-      const searchModels = [
-        { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
-        { model: "gemini-3.7-flash", timeoutMs: 25000 },
-        { model: "gemini-flash-latest", timeoutMs: 20000 },
-        { model: "gemini-3.1-pro-preview", timeoutMs: 25000 },
-      ];
+      // ضبط قائمة النماذج ومعاملات الاستجابة الفائقة (Turbo Speed / Priority Queue) بناءً على رتبة المستخدم (userTier)
+      const isTurboTier = userTier === "pro";
+      const maxOutputTokens = isTurboTier ? 8192 : 2048;
+      const modelTemperature = isTurboTier ? 0.3 : 0.4;
 
-      const chatModels = [
-        { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
-        { model: "gemini-3.7-flash", timeoutMs: 25000 },
-        { model: "gemini-flash-latest", timeoutMs: 20000 },
-        { model: "gemini-3.1-pro-preview", timeoutMs: 25000 },
-      ];
+      // Priority Queue: باقة PRO تمنح أولوية قصوى للمعالجة ونماذج الاستدلال الأقوى
+      const searchModels =
+        isTurboTier
+          ? [
+              { model: "gemini-3.7-flash", timeoutMs: 25000 },
+              { model: "gemini-flash-latest", timeoutMs: 20000 },
+              { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
+              { model: "gemini-2.5-flash", timeoutMs: 18000 },
+            ]
+          : [
+              { model: "gemini-3.1-flash-lite", timeoutMs: 15000 },
+              { model: "gemini-flash-latest", timeoutMs: 18000 },
+              { model: "gemini-3.7-flash", timeoutMs: 20000 },
+              { model: "gemini-2.5-flash", timeoutMs: 18000 },
+            ];
+
+      const chatModels =
+        isTurboTier
+          ? [
+              { model: "gemini-3.7-flash", timeoutMs: 25000 },
+              { model: "gemini-flash-latest", timeoutMs: 20000 },
+              { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
+              { model: "gemini-2.5-flash", timeoutMs: 18000 },
+            ]
+          : [
+              { model: "gemini-3.1-flash-lite", timeoutMs: 15000 },
+              { model: "gemini-flash-latest", timeoutMs: 18000 },
+              { model: "gemini-3.7-flash", timeoutMs: 20000 },
+              { model: "gemini-2.5-flash", timeoutMs: 18000 },
+            ];
 
       let success = false;
       let lastErr: any = null;
@@ -955,7 +1312,8 @@ ${fullMemorySection}`;
                   contents,
                   config: {
                     systemInstruction: supremeSystemPrompt,
-                    temperature: 0.3,
+                    temperature: modelTemperature,
+                    maxOutputTokens,
                     tools: [{ googleSearch: {} }],
                   },
                 }),
@@ -996,8 +1354,7 @@ ${fullMemorySection}`;
             const errStr = String(err?.message || err?.status || err || "");
             const isQuotaErr = /exceeded\s*your\s*current\s*quota|RESOURCE_EXHAUSTED|429/i.test(errStr);
             if (isQuotaErr) {
-              googleSearchGroundingQuotaExhaustedUntil = Date.now() + 15 * 60 * 1000;
-              break;
+              googleSearchGroundingQuotaExhaustedUntil = Date.now() + 5 * 60 * 1000;
             }
             console.warn(`Search grounding attempt with ${model} failed/timed out:`, err?.message || err);
             lastErr = err;
@@ -1020,7 +1377,8 @@ ${fullMemorySection}`;
                   contents,
                   config: {
                     systemInstruction: supremeSystemPrompt,
-                    temperature: 0.35,
+                    temperature: modelTemperature,
+                    maxOutputTokens,
                   },
                 }),
               timeoutMs
@@ -1038,6 +1396,11 @@ ${fullMemorySection}`;
             if (retrySec > 0) detectedRetrySeconds = retrySec;
           }
         }
+      }
+
+      // تسجيل استهلاك الصورة المرفقة إذا تم إرسالها
+      if (attachedImage) {
+        incrementDailyImageCount(userId);
       }
 
       // 3. Fallback graceful response if all Google models are momentarily rate-limited
@@ -1073,25 +1436,38 @@ ${fullMemorySection}`;
       }
     }
 
-    // استخراج وتخزين الذاكرة الجديدة
+    // استخراج وتخزين الذاكرة الجديدة مع احترام حدود الباقة (100 معلومة للمجاني و1000 لباقة PRO)
     const newFacts = extractMemoryTags(rawAiText);
-    for (const fact of newFacts) {
+    if (newFacts.length > 0) {
       try {
-        await db
-          .insert(userMemoryTable)
-          .values({
-            userId,
-            ...fact,
-            updatedAt: new Date(),
-          })
-          .onConflictDoUpdate({
-            target: [userMemoryTable.userId, userMemoryTable.key],
-            set: {
-              value: fact.value,
-              label: fact.label,
+        const maxAllowedFacts = plan === "pro" ? 1000 : 100;
+        const existingFacts = await db
+          .select()
+          .from(userMemoryTable)
+          .where(eq(userMemoryTable.userId, userId));
+
+        for (const fact of newFacts) {
+          const isExistingKey = existingFacts.some((f) => f.key === fact.key);
+          if (!isExistingKey && existingFacts.length >= maxAllowedFacts) {
+            continue; // تجاوز الحد الأقصى للباقة
+          }
+
+          await db
+            .insert(userMemoryTable)
+            .values({
+              userId,
+              ...fact,
               updatedAt: new Date(),
-            },
-          });
+            })
+            .onConflictDoUpdate({
+              target: [userMemoryTable.userId, userMemoryTable.key],
+              set: {
+                value: fact.value,
+                label: fact.label,
+                updatedAt: new Date(),
+              },
+            });
+        }
       } catch (memErr) {
         console.warn("Could not save memory fact:", memErr);
       }
@@ -1100,16 +1476,21 @@ ${fullMemorySection}`;
     const { cleanText: textWithoutSuggestions, suggestions: extractedSuggestions } =
       extractSuggestionsTags(rawAiText);
 
-    const isEnglishResponse =
-      /[a-zA-Z]{4,}/.test(textWithoutSuggestions) &&
-      !/[\u0600-\u06FF]/.test(textWithoutSuggestions);
+    // كشف لغة الرد بدقة لمزامنة الاقتراحات السريعة معها 100%
+    const responseLanguage = detectTextLanguage(textWithoutSuggestions);
+
+    // تصفية الاقتراحات المستخرجة للتحقق من عدم وجود تضارب لغوي أو نصوص عربية في الردود الإنجليزية
+    const validSuggestions = validateAndFilterSuggestions(
+      extractedSuggestions,
+      responseLanguage
+    );
 
     const finalSuggestions =
-      extractedSuggestions.length > 0
-        ? extractedSuggestions
+      validSuggestions.length > 0
+        ? validSuggestions
         : generateFallbackSuggestions(
             textWithoutSuggestions,
-            isEnglishResponse,
+            responseLanguage,
             isImageGeneration,
             gibberishCheck.isGibberish
           );
@@ -1222,6 +1603,8 @@ ${fullMemorySection}`;
       isImageGeneration,
       searchSources: searchSources.slice(0, 5),
       suggestions: finalSuggestions,
+      userTier,
+      turboSpeed: isProTier,
     });
   } catch (err) {
     console.error("Server error in /api/chat:", err);

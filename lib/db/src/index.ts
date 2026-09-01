@@ -81,109 +81,107 @@ function matchesCondition(row: any, condition: any): boolean {
   return true;
 }
 
+function getTableName(table: any): string {
+  if (!table) return "conversations";
+  if (typeof table === "string") return table;
+  if (table?._?.name) return table._.name;
+  if (table === schema.conversationsTable) return "conversations";
+  if (table === schema.messagesTable) return "messages";
+  if (table === schema.userMemoryTable) return "user_memory";
+  return table?.name || "conversations";
+}
+
+function createQueryBuilder(tableName: string) {
+  let queryCondition: any = null;
+  let queryOrders: any[] = [];
+  let queryLimit: number | null = null;
+  let queryOffset: number | null = null;
+
+  const builder: any = {
+    where: (cond: any) => {
+      queryCondition = cond;
+      return builder;
+    },
+    orderBy: (...orders: any[]) => {
+      queryOrders = orders.flat();
+      return builder;
+    },
+    limit: (n: number) => {
+      queryLimit = typeof n === "number" ? n : null;
+      return builder;
+    },
+    offset: (n: number) => {
+      queryOffset = typeof n === "number" ? n : null;
+      return builder;
+    },
+    then: (resolve: any, reject?: any) => {
+      try {
+        const results = executeSelect(tableName, queryCondition, queryOrders, queryLimit, queryOffset);
+        return Promise.resolve(results).then(resolve, reject);
+      } catch (err) {
+        if (reject) return reject(err);
+        throw err;
+      }
+    },
+    catch: (reject: any) => {
+      try {
+        const results = executeSelect(tableName, queryCondition, queryOrders, queryLimit, queryOffset);
+        return Promise.resolve(results).catch(reject);
+      } catch (err) {
+        return Promise.reject(err).catch(reject);
+      }
+    },
+  };
+
+  return builder;
+}
+
 function createInMemoryDb() {
   return {
     select: () => ({
       from: (table: any) => {
-        const tableName = table?._?.name || (table === schema.conversationsTable ? "conversations" : table === schema.messagesTable ? "messages" : "user_memory");
-        return {
-          where: (condition: any) => ({
-            orderBy: (_order?: any) => {
-              return executeSelect(tableName, condition);
-            },
-            then: (resolve: any, reject?: any) => {
-              try {
-                return Promise.resolve(executeSelect(tableName, condition)).then(resolve, reject);
-              } catch (err) {
-                if (reject) return reject(err);
-                throw err;
-              }
-            },
-          }),
-          orderBy: (_order?: any) => {
-            return executeSelect(tableName, null);
-          },
-          then: (resolve: any, reject?: any) => {
-            try {
-              return Promise.resolve(executeSelect(tableName, null)).then(resolve, reject);
-            } catch (err) {
-              if (reject) return reject(err);
-              throw err;
-            }
-          },
-        };
+        const tableName = getTableName(table);
+        return createQueryBuilder(tableName);
       },
     }),
     insert: (table: any) => ({
       values: (vals: any) => {
         const valArray = Array.isArray(vals) ? vals : [vals];
-        const tableName = table?._?.name || (table === schema.conversationsTable ? "conversations" : table === schema.messagesTable ? "messages" : "user_memory");
-        const inserted: any[] = [];
-
-        for (const v of valArray) {
-          if (tableName === "conversations") {
-            const id = v.id || crypto.randomUUID();
-            const record: ConvRecord = {
-              id,
-              userId: v.userId || "anonymous",
-              title: v.title || "محادثة جديدة",
-              createdAt: v.createdAt || new Date(),
-              updatedAt: v.updatedAt || new Date(),
-            };
-            memoryDb.conversations.set(id, record);
-            inserted.push(record);
-          } else if (tableName === "messages") {
-            const record: MsgRecord = {
-              id: memoryDb.msgIdCounter++,
-              conversationId: v.conversationId,
-              role: v.role,
-              content: v.content,
-              createdAt: v.createdAt || new Date(),
-            };
-            memoryDb.messages.push(record);
-            inserted.push(record);
-          } else if (tableName === "user_memory") {
-            const memKey = `${v.userId || "anonymous"}:${v.key}`;
-            const record: MemRecord = {
-              userId: v.userId || "anonymous",
-              key: v.key,
-              value: v.value,
-              label: v.label,
-              updatedAt: v.updatedAt || new Date(),
-            };
-            memoryDb.userMemory.set(memKey, record);
-            inserted.push(record);
-          }
-        }
+        const tableName = getTableName(table);
+        const inserted = executeInsert(tableName, valArray);
 
         return {
           onConflictDoUpdate: (_opts: any) => ({
             returning: () => Promise.resolve(inserted),
-            then: (resolve: any) => Promise.resolve(inserted).then(resolve),
+            then: (resolve: any, reject?: any) => Promise.resolve(inserted).then(resolve, reject),
+            catch: (reject: any) => Promise.resolve(inserted).catch(reject),
           }),
           returning: () => Promise.resolve(inserted),
-          then: (resolve: any) => Promise.resolve(inserted).then(resolve),
+          then: (resolve: any, reject?: any) => Promise.resolve(inserted).then(resolve, reject),
+          catch: (reject: any) => Promise.resolve(inserted).catch(reject),
         };
       },
     }),
     delete: (table: any) => ({
       where: (condition: any) => {
-        const tableName = table?._?.name || (table === schema.conversationsTable ? "conversations" : table === schema.messagesTable ? "messages" : "user_memory");
+        const tableName = getTableName(table);
         const deleted = executeDelete(tableName, condition);
         return {
           returning: () => Promise.resolve(deleted),
-          then: (resolve: any) => Promise.resolve(deleted).then(resolve),
+          then: (resolve: any, reject?: any) => Promise.resolve(deleted).then(resolve, reject),
+          catch: (reject: any) => Promise.resolve(deleted).catch(reject),
         };
       },
     }),
     update: (table: any) => ({
       set: (updateValues: any) => ({
         where: (condition: any) => {
-          const tableName = table?._?.name || (table === schema.conversationsTable ? "conversations" : table === schema.messagesTable ? "messages" : "user_memory");
+          const tableName = getTableName(table);
           const updated = executeUpdate(tableName, condition, updateValues);
           return {
             returning: () => Promise.resolve(updated),
-            then: (resolve: any) => Promise.resolve(updated).then(resolve),
+            then: (resolve: any, reject?: any) => Promise.resolve(updated).then(resolve, reject),
+            catch: (reject: any) => Promise.resolve(updated).catch(reject),
           };
         },
       }),
@@ -191,29 +189,82 @@ function createInMemoryDb() {
   };
 }
 
-function executeSelect(tableName: string, condition: any): any[] {
+function executeInsert(tableName: string, valArray: any[]): any[] {
+  const inserted: any[] = [];
+  for (const v of valArray) {
+    if (tableName === "conversations") {
+      const id = v.id || crypto.randomUUID();
+      const record: ConvRecord = {
+        id,
+        userId: v.userId || "anonymous",
+        title: v.title || "محادثة جديدة",
+        createdAt: v.createdAt || new Date(),
+        updatedAt: v.updatedAt || new Date(),
+      };
+      memoryDb.conversations.set(id, record);
+      inserted.push(record);
+    } else if (tableName === "messages") {
+      const record: MsgRecord = {
+        id: memoryDb.msgIdCounter++,
+        conversationId: v.conversationId,
+        role: v.role,
+        content: v.content,
+        createdAt: v.createdAt || new Date(),
+      };
+      memoryDb.messages.push(record);
+      inserted.push(record);
+    } else if (tableName === "user_memory") {
+      const memKey = `${v.userId || "anonymous"}:${v.key}`;
+      const record: MemRecord = {
+        userId: v.userId || "anonymous",
+        key: v.key,
+        value: v.value,
+        label: v.label,
+        updatedAt: v.updatedAt || new Date(),
+      };
+      memoryDb.userMemory.set(memKey, record);
+      inserted.push(record);
+    }
+  }
+  return inserted;
+}
+
+function executeSelect(
+  tableName: string,
+  condition: any,
+  orderClauses?: any[],
+  limitCount?: number | null,
+  offsetCount?: number | null
+): any[] {
+  let list: any[] = [];
   if (tableName === "conversations") {
-    let list = Array.from(memoryDb.conversations.values());
+    list = Array.from(memoryDb.conversations.values());
     if (condition) {
       list = list.filter((item) => matchesCondition(item, condition));
     }
-    return list.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  }
-  if (tableName === "messages") {
-    let list = [...memoryDb.messages];
+    list.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  } else if (tableName === "messages") {
+    list = [...memoryDb.messages];
     if (condition) {
       list = list.filter((item) => matchesCondition(item, condition));
     }
-    return list.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  }
-  if (tableName === "user_memory") {
-    let list = Array.from(memoryDb.userMemory.values());
+    list.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  } else if (tableName === "user_memory") {
+    list = Array.from(memoryDb.userMemory.values());
     if (condition) {
       list = list.filter((item) => matchesCondition(item, condition));
     }
-    return list.sort((a, b) => a.key.localeCompare(b.key));
+    list.sort((a, b) => a.key.localeCompare(b.key));
   }
-  return [];
+
+  if (offsetCount !== null && offsetCount !== undefined && offsetCount > 0) {
+    list = list.slice(offsetCount);
+  }
+  if (limitCount !== null && limitCount !== undefined && limitCount >= 0) {
+    list = list.slice(0, limitCount);
+  }
+
+  return list;
 }
 
 function executeDelete(tableName: string, condition: any): any[] {

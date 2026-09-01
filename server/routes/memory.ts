@@ -4,21 +4,41 @@ import { db, userMemoryTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
-function getUserId(req: any): string {
+function getUserAuth(req: any): { userId: string; plan: "free" | "pro" } {
   const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ") && auth.length > 7) return auth.slice(7);
-  return "anonymous";
+  const headerPlan = req.headers["x-user-plan"];
+  let userId = "anonymous";
+  let plan: "free" | "pro" = headerPlan === "pro" ? "pro" : "free";
+
+  if (auth?.startsWith("Bearer ") && auth.length > 7) {
+    const raw = decodeURIComponent(auth.slice(7));
+    if (raw.includes(":")) {
+      const parts = raw.split(":");
+      userId = parts[0] || "anonymous";
+      if (parts[1] === "pro") plan = "pro";
+    } else {
+      userId = raw;
+    }
+  }
+
+  if (req.body?.userPlan === "pro") {
+    plan = "pro";
+  }
+
+  return { userId, plan };
 }
 
 // ── GET /memory ─────────────────────────────────────────────────────────────
 router.get("/", async (req, res) => {
-  const userId = getUserId(req);
+  const { userId, plan } = getUserAuth(req);
   try {
+    const limit = plan === "pro" ? 1000 : 100;
     const facts = await db
       .select()
       .from(userMemoryTable)
       .where(eq(userMemoryTable.userId, userId))
-      .orderBy(userMemoryTable.key);
+      .orderBy(userMemoryTable.key)
+      .limit(limit);
     res.json(facts);
   } catch (err) {
     console.error("listMemory error:", err);
@@ -28,7 +48,7 @@ router.get("/", async (req, res) => {
 
 // ── POST /memory ─────────────────────────────────────────────────────────────
 router.post("/", async (req, res) => {
-  const userId = getUserId(req);
+  const { userId, plan } = getUserAuth(req);
   const { key, value, label } = req.body as {
     key?: string;
     value?: string;
@@ -41,6 +61,29 @@ router.post("/", async (req, res) => {
   }
 
   try {
+    // Check tier limits: 100 facts for Free, 1000 for PRO
+    const maxFacts = plan === "pro" ? 1000 : 100;
+    const existing = await db
+      .select()
+      .from(userMemoryTable)
+      .where(eq(userMemoryTable.userId, userId));
+
+    const isUpdatingExistingKey = existing.some((f) => f.key === key.trim());
+
+    if (!isUpdatingExistingKey && existing.length >= maxFacts) {
+      const errorMsg =
+        plan === "pro"
+          ? "وصلت للحد الأقصى للذاكرة في باقة PRO (1000 معلومة)."
+          : "وصلت للحد الأقصى للذاكرة في الباقة المجانية (100 معلومة). يرجى الترقية إلى باقة PRO لزيادة السعة إلى 1000 معلومة!";
+      res.status(403).json({
+        error: errorMsg,
+        limitReached: true,
+        currentCount: existing.length,
+        maxLimit: maxFacts,
+      });
+      return;
+    }
+
     const [fact] = await db
       .insert(userMemoryTable)
       .values({
@@ -64,7 +107,7 @@ router.post("/", async (req, res) => {
 
 // ── DELETE /memory/:key ──────────────────────────────────────────────────────
 router.delete("/:key", async (req, res) => {
-  const userId = getUserId(req);
+  const { userId } = getUserAuth(req);
   try {
     const result = await db
       .delete(userMemoryTable)

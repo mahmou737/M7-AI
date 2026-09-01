@@ -3,6 +3,7 @@ export interface ChatMessageItem {
   role: "user" | "assistant";
   content: string;
   imageUrl?: string | null;
+  attachedFile?: { name: string; type: "zip" | "document" | "code"; sizeStr?: string } | null;
   isWebSearch?: boolean;
   isImageGeneration?: boolean;
   searchSources?: Array<{ title: string; uri: string; domain?: string }>;

@@ -26,20 +26,24 @@ import {
   Code2,
   Cpu,
   Feather,
-  CheckCircle2
+  CheckCircle2,
+  Crown,
 } from "lucide-react";
+import { PricingModal } from "@/components/PricingModal";
 
 export default function Home() {
   const [, navigate] = useLocation();
-  const { user, logout } = useAuth();
+  const { user, plan, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { i18n } = useTranslation();
   const [quickPrompt, setQuickPrompt] = useState("");
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isPricingOpen, setIsPricingOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   const isRtl = i18n.language === "ar";
   const isDark = theme === "dark";
+  const isPro = plan === "pro";
 
   // Close profile dropdown on click outside
   useEffect(() => {
@@ -182,6 +186,23 @@ export default function Home() {
                     </span>
                   </button>
 
+                  {/* باقات الاشتراك */}
+                  <button
+                    onClick={() => {
+                      setIsProfileMenuOpen(false);
+                      setIsPricingOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 rounded-xl transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Crown className="w-4 h-4 text-[#F59E0B]" />
+                      <span>{isRtl ? "باقات الاشتراك والترقية" : "Subscription & Pricing"}</span>
+                    </div>
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-300">
+                      {isPro ? "PRO" : "$5/mo"}
+                    </span>
+                  </button>
+
                   {/* إعدادات الحساب */}
                   <button
                     onClick={() => {
@@ -283,7 +304,13 @@ export default function Home() {
         <div className="w-full max-w-xl mt-5 sm:mt-6 grid grid-cols-2 gap-2.5 sm:gap-3">
           {/* الكارت الأول (أعلى اليمين في العربية): توليد أفكار ومحتوى */}
           <div
-            onClick={() => handleStartChat("اكتب لي محتوى إبداعي وأفكار ملهمة")}
+            onClick={() =>
+              handleStartChat(
+                isRtl
+                  ? "اكتب لي محتوى إبداعي وأفكار ملهمة"
+                  : "Write creative content and inspiring ideas for me"
+              )
+            }
             className="group p-3.5 sm:p-4 rounded-[18px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] hover:border-[#F59E0B]/40 transition-all duration-200 flex flex-col items-center text-center shadow-md cursor-pointer"
           >
             <div className="w-9 h-9 rounded-[12px] bg-[#F59E0B]/10 flex items-center justify-center text-[#F59E0B] mb-2 group-hover:scale-110 transition-transform">
@@ -299,7 +326,13 @@ export default function Home() {
 
           {/* الكارت الثاني (أعلى اليسار في العربية): استجابة فائقة السرعة */}
           <div
-            onClick={() => handleStartChat("ما هي أسرع طريقة لتحليل البيانات؟")}
+            onClick={() =>
+              handleStartChat(
+                isRtl
+                  ? "ما هي أسرع طريقة لتحليل البيانات؟"
+                  : "What is the fastest way to analyze large datasets?"
+              )
+            }
             className="group p-3.5 sm:p-4 rounded-[18px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] hover:border-[#F59E0B]/40 transition-all duration-200 flex flex-col items-center text-center shadow-md cursor-pointer"
           >
             <div className="w-9 h-9 rounded-[12px] bg-[#F59E0B]/10 flex items-center justify-center text-[#F59E0B] mb-2 group-hover:scale-110 transition-transform">
@@ -315,7 +348,13 @@ export default function Home() {
 
           {/* الكارت الثالث (أسفل اليمين في العربية): تعلم وفهم سياقي */}
           <div
-            onClick={() => handleStartChat("تذكر هذا السياق لمشروعي الجديد")}
+            onClick={() =>
+              handleStartChat(
+                isRtl
+                  ? "تذكر هذا السياق لمشروعي الجديد"
+                  : "Remember this context for my upcoming project"
+              )
+            }
             className="group p-3.5 sm:p-4 rounded-[18px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] hover:border-[#F59E0B]/40 transition-all duration-200 flex flex-col items-center text-center shadow-md cursor-pointer"
           >
             <div className="w-9 h-9 rounded-[12px] bg-[#F59E0B]/10 flex items-center justify-center text-[#F59E0B] mb-2 group-hover:scale-110 transition-transform">
@@ -331,7 +370,13 @@ export default function Home() {
 
           {/* الكارت الرابع (أسفل اليسار في العربية): كتابة شفرات برمجية */}
           <div
-            onClick={() => handleStartChat("ساعدني في كتابة كود برمجي بلغة TypeScript")}
+            onClick={() =>
+              handleStartChat(
+                isRtl
+                  ? "ساعدني في كتابة كود برمجي بلغة TypeScript"
+                  : "Help me write high-performance TypeScript code"
+              )
+            }
             className="group p-3.5 sm:p-4 rounded-[18px] bg-[var(--bg-card)] hover:opacity-90 border border-[var(--border-color)] hover:border-[#F59E0B]/40 transition-all duration-200 flex flex-col items-center text-center shadow-md cursor-pointer"
           >
             <div className="w-9 h-9 rounded-[12px] bg-[#F59E0B]/10 flex items-center justify-center text-[#F59E0B] mb-2 group-hover:scale-110 transition-transform">
@@ -404,6 +449,12 @@ export default function Home() {
           </div>
         </div>
       </footer>
+
+      {/* Pricing Modal */}
+      <PricingModal
+        isOpen={isPricingOpen}
+        onClose={() => setIsPricingOpen(false)}
+      />
     </div>
   );
 }

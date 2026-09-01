@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "react-i18next";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { PricingModal } from "@/components/PricingModal";
 import {
   useListMemory,
   useDeleteMemory,
@@ -28,12 +29,15 @@ import {
   RotateCcw,
   Sparkles,
   ShieldCheck,
+  Crown,
+  Image as ImageIcon,
+  Zap,
 } from "lucide-react";
 import { performFullAppCacheClean } from "@/lib/sessionManager";
 
 export default function Profile() {
   const [, navigate] = useLocation();
-  const { user, updateProfile, logout } = useAuth();
+  const { user, updateProfile, logout, getDailyImageUsage, getImageLimitInfo } = useAuth();
   const { i18n } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -44,6 +48,7 @@ export default function Profile() {
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [isCleaningCache, setIsCleaningCache] = useState(false);
   const [cleanCacheSuccess, setCleanCacheSuccess] = useState(false);
+  const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
 
   const memoryQuery = useListMemory();
   const convsQuery = useListConversations();
@@ -51,6 +56,11 @@ export default function Profile() {
 
   const memories = memoryQuery.data || [];
   const conversations = convsQuery.data || [];
+
+  const isPro = user?.plan === "pro";
+  const dailyImageCount = getDailyImageUsage();
+  const imageLimitInfo = getImageLimitInfo();
+  const maxMemoryLimit = isPro ? 1000 : 100;
 
   const toggleLanguage = () => {
     const next = isRtl ? "en" : "ar";
@@ -199,6 +209,153 @@ export default function Profile() {
           </div>
         </div>
 
+        {/* Subscription Plan & Usage Limits Card */}
+        <div className="p-6 sm:p-8 rounded-3xl bg-[var(--bg-card)] border border-[var(--border-color)] backdrop-blur-xl space-y-6 shadow-xl relative overflow-hidden">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border-color)]">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-300 text-black flex items-center justify-center font-black shadow-md shadow-amber-500/20">
+                <Crown className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-lg font-black text-[var(--text-main)]">
+                    {isRtl ? "باقة الاشتراك وحدود الاستخدام" : "Subscription Plan & Limits"}
+                  </h2>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-black uppercase tracking-wider ${
+                      isPro
+                        ? "bg-amber-500/20 text-amber-500 border border-amber-500/40"
+                        : "bg-black/10 dark:bg-white/10 text-[var(--text-secondary)] border border-[var(--border-color)]"
+                    }`}
+                  >
+                    {isPro ? "M7 PRO ($5/mo)" : isRtl ? "الباقة المجانية ($0)" : "Free Plan ($0)"}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text-secondary)]">
+                  {isPro
+                    ? isRtl
+                      ? "مشترك نشط في باقة PRO — صور غير محدودة وسرعة استجابة فائقة"
+                      : "Active PRO subscriber — Unlimited images & turbo speed"
+                    : isRtl
+                    ? "أنت في الباقة المجانية — يمكنك الترقية إلى PRO بـ 5$ لفتح الميزات اللانهائية"
+                    : "You are on Free Plan — Upgrade to PRO for $5/mo to unlock unlimited limits"}
+                </p>
+              </div>
+            </div>
+
+            <Button
+              onClick={() => setIsPricingModalOpen(true)}
+              className="h-10 px-5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 !text-black font-black text-xs shadow-md shadow-amber-500/20 transition-all flex items-center gap-1.5 flex-shrink-0"
+            >
+              <Crown className="w-4 h-4 text-black" />
+              <span className="!text-black">
+                {isPro
+                  ? isRtl
+                    ? "إدارة الباقة والاشتراك"
+                    : "Manage Plan"
+                  : isRtl
+                  ? "ترقية إلى PRO (5$ شهرياً)"
+                  : "Upgrade to PRO ($5/mo)"}
+              </span>
+            </Button>
+          </div>
+
+          {/* Tier Usage Gauges */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Images Gauge */}
+            <div className="p-4 rounded-2xl bg-black/5 dark:bg-white/[0.02] border border-[var(--border-color)] space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold flex items-center gap-1.5 text-[var(--text-main)]">
+                  <ImageIcon className="w-4 h-4 text-amber-500" />
+                  {isRtl ? (isPro ? "إرفاق صور لا نهائية" : "إرفاق 5 صور يومياً") : (isPro ? "Unlimited Images" : "Attach 5 images daily")}
+                </span>
+                <span className="text-[11px] font-bold text-amber-500">
+                  {isPro ? (isRtl ? "غير محدود ∞" : "Unlimited ∞") : `${dailyImageCount} / 5`}
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                <div
+                  className="h-full bg-amber-500 rounded-full transition-all"
+                  style={{
+                    width: isPro ? "100%" : `${Math.min(100, (dailyImageCount / 5) * 100)}%`,
+                  }}
+                />
+              </div>
+              <p className="text-[10px] text-[var(--text-secondary)]">
+                {isPro
+                  ? isRtl
+                    ? "إرفاق وتوليد صور عالية الدقة بدون أي حدود يومية"
+                    : "Unlimited HD images and attachments"
+                  : imageLimitInfo.isExhausted
+                  ? isRtl
+                    ? `استهلكت الحد (5/5) — يتجدد تلقائياً بعد ${imageLimitInfo.formattedRemainingTimeAr}`
+                    : `Limit reached (5/5) — Auto-renews in ${imageLimitInfo.formattedRemainingTimeEn}`
+                  : isRtl
+                  ? `متبقي ${imageLimitInfo.remainingImages} من 5 صور (تجديد تلقائي كل 24 ساعة)`
+                  : `${imageLimitInfo.remainingImages} of 5 images left (24h auto renewal)`}
+              </p>
+            </div>
+
+            {/* Memory Facts Gauge */}
+            <div className="p-4 rounded-2xl bg-black/5 dark:bg-white/[0.02] border border-[var(--border-color)] space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold flex items-center gap-1.5 text-[var(--text-main)]">
+                  <Brain className="w-4 h-4 text-amber-500" />
+                  {isRtl ? "سعة الذاكرة المستمرة" : "Memory Facts Capacity"}
+                </span>
+                <span className="text-[11px] font-bold text-amber-500">
+                  {memories.length} / {maxMemoryLimit}
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                <div
+                  className="h-full bg-amber-500 rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(100, (memories.length / maxMemoryLimit) * 100)}%`,
+                  }}
+                />
+              </div>
+              <p className="text-[10px] text-[var(--text-secondary)]">
+                {isPro
+                  ? isRtl
+                    ? "سعة موسعة حتى 1000 معلومة سياقية"
+                    : "Expanded capacity up to 1,000 memory facts"
+                  : isRtl
+                  ? "سعة تصل لـ 100 معلومة في الباقة المجانية"
+                  : "Capacity up to 100 facts on Free plan"}
+              </p>
+            </div>
+
+            {/* Speed & Precision Gauge */}
+            <div className="p-4 rounded-2xl bg-black/5 dark:bg-white/[0.02] border border-[var(--border-color)] space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold flex items-center gap-1.5 text-[var(--text-main)]">
+                  <Zap className="w-4 h-4 text-amber-500" />
+                  {isRtl ? "سرعة ودقة الاستجابة" : "Response Precision"}
+                </span>
+                <span className="text-[11px] font-bold text-amber-500">
+                  {isPro ? (isRtl ? "فائقة Turbo ⚡" : "Turbo ⚡") : (isRtl ? "قياسية" : "Standard")}
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                <div
+                  className="h-full bg-amber-500 rounded-full transition-all"
+                  style={{ width: isPro ? "100%" : "50%" }}
+                />
+              </div>
+              <p className="text-[10px] text-[var(--text-secondary)]">
+                {isPro
+                  ? isRtl
+                    ? "أولوية معالجة قصوى مع نماذج Gemini المتقدمة"
+                    : "Priority processing with advanced reasoning depth"
+                  : isRtl
+                  ? "معالجة قياسية متوازنة لجميع الاستفسارات"
+                  : "Standard balanced processing speed"}
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Smart Memory Management Section */}
         <div className="p-6 sm:p-8 rounded-3xl bg-[var(--bg-card)] border border-[var(--border-color)] backdrop-blur-xl space-y-4 shadow-xl">
           <div className="flex items-center justify-between pb-4 border-b border-[var(--border-color)]">
@@ -333,6 +490,12 @@ export default function Profile() {
           </div>
         </div>
       </main>
+
+      {/* Pricing Modal */}
+      <PricingModal
+        isOpen={isPricingModalOpen}
+        onClose={() => setIsPricingModalOpen(false)}
+      />
     </div>
   );
 }
