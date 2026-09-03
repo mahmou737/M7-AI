@@ -7,13 +7,13 @@
 import { Router, Request } from "express";
 import { GoogleGenAI } from "@google/genai";
 import { eq, and, desc } from "drizzle-orm";
-import { SendMessageBody } from "@workspace/api-zod";
+import { SendMessageBody } from "../../lib/api-zod/src/index.js";
 import {
   db,
   messagesTable,
   conversationsTable,
   userMemoryTable,
-} from "@workspace/db";
+} from "../../lib/db/src/index.js";
 import { AI_PERSONAS, PersonaId } from "../personas.js";
 
 const router = Router();

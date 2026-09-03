@@ -5,7 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { ChatMessageRole } from './chatMessageRole';
+import type { ChatMessageRole } from './chatMessageRole.js';
 
 export interface ChatMessage {
   role: ChatMessageRole;

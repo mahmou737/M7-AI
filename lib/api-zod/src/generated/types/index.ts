@@ -6,16 +6,16 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export * from './chatInput';
-export * from './chatMessage';
-export * from './chatMessageRole';
-export * from './chatResponse';
-export * from './conversation';
-export * from './errorResponse';
-export * from './healthStatus';
-export * from './memoryItem';
-export * from './storedMessage';
-export * from './storedMessageRole';
-export * from './successResponse';
-export * from './updateConversationInput';
-export * from './upsertMemoryInput';
+export * from './chatInput.js';
+export * from './chatMessage.js';
+export * from './chatMessageRole.js';
+export * from './chatResponse.js';
+export * from './conversation.js';
+export * from './errorResponse.js';
+export * from './healthStatus.js';
+export * from './memoryItem.js';
+export * from './storedMessage.js';
+export * from './storedMessageRole.js';
+export * from './successResponse.js';
+export * from './updateConversationInput.js';
+export * from './upsertMemoryInput.js';

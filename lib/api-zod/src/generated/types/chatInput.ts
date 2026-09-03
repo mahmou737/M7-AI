@@ -5,7 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { ChatMessage } from './chatMessage';
+import type { ChatMessage } from './chatMessage.js';
 
 export interface ChatInput {
   messages: ChatMessage[];
