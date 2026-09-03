@@ -14,7 +14,7 @@ import {
   conversationsTable,
   userMemoryTable,
 } from "@workspace/db";
-import { AI_PERSONAS, PersonaId } from "../personas";
+import { AI_PERSONAS, PersonaId } from "../personas.js";
 
 const router = Router();
 const MEMORY_TAG_RE = /<M7MEMORY>([\s\S]*?)<\/M7MEMORY>/g;

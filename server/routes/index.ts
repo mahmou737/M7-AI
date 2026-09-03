@@ -1,8 +1,8 @@
 import { Router } from "express";
-import chatRouter from "./chat";
-import conversationsRouter from "./conversations";
-import memoryRouter from "./memory";
-import kashierRouter from "./kashier";
+import chatRouter from "./chat.js";
+import conversationsRouter from "./conversations.js";
+import memoryRouter from "./memory.js";
+import kashierRouter from "./kashier.js";
 
 const router = Router();
 

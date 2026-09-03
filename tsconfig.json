@@ -26,5 +26,5 @@
       "@workspace/db/*": ["lib/db/src/*"]
     }
   },
-  "include": ["src", "server", "lib", "server.ts", "vite.config.ts"]
+  "include": ["src", "server", "api", "lib", "server.ts", "vite.config.ts"]
 }
