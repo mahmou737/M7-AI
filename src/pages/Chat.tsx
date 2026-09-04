@@ -274,6 +274,21 @@ function CodeBlock({ children, className, ...props }: any) {
   );
 }
 
+/**
+ * تنظيف محتوى الرسائل المعروضة من أي وسوم أو أكواد استدعاء أدوات توليد الصور (dalle.text2im)
+ */
+function cleanDisplayContent(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/<(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>[\s\S]*?<\/(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>/gi, "")
+    .replace(/```(?:json)?\s*\{[\s\S]*?(?:dalle\.text2im|text2im|image_generation|generate_image)[\s\S]*?\}\s*```/gi, "")
+    .replace(/\{[\s\r\n]*"(?:action|tool|name)"[\s\r\n]*:[\s\r\n]*"(?:dalle\.text2im|text2im|image_generation|generate_image)"[\s\S]*?\}(?:\s*\}|\s*\))/gi, "")
+    .replace(/(?:dalle\.text2im|text2im|generate_image)\s*\([\s\S]*?\)/gi, "")
+    .replace(/^[^\n\r]*dalle\.text2im[^\n\r]*/gmi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const StreamableContent = memo(function StreamableContent({
   content,
   isLatestAssistant,
@@ -285,26 +300,27 @@ const StreamableContent = memo(function StreamableContent({
   isGenerating: boolean;
   isRtl: boolean;
 }) {
-  const [displayedLength, setDisplayedLength] = useState(() => (isLatestAssistant && isGenerating ? Math.min(20, content.length) : content.length));
+  const sanitizedContent = cleanDisplayContent(content);
+  const [displayedLength, setDisplayedLength] = useState(() => (isLatestAssistant && isGenerating ? Math.min(20, sanitizedContent.length) : sanitizedContent.length));
 
   useEffect(() => {
     if (!isLatestAssistant || !isGenerating) {
-      setDisplayedLength(content.length);
+      setDisplayedLength(sanitizedContent.length);
       return;
     }
 
-    if (displayedLength < content.length) {
-      const remaining = content.length - displayedLength;
+    if (displayedLength < sanitizedContent.length) {
+      const remaining = sanitizedContent.length - displayedLength;
       const step = Math.max(2, Math.min(15, Math.ceil(remaining / 6)));
       const timer = setTimeout(() => {
-        setDisplayedLength((prev) => Math.min(content.length, prev + step));
+        setDisplayedLength((prev) => Math.min(sanitizedContent.length, prev + step));
       }, 20);
       return () => clearTimeout(timer);
     }
-  }, [content.length, displayedLength, isLatestAssistant, isGenerating]);
+  }, [sanitizedContent.length, displayedLength, isLatestAssistant, isGenerating]);
 
-  const visibleText = isLatestAssistant && isGenerating ? content.slice(0, displayedLength) : content;
-  const isStreaming = isLatestAssistant && isGenerating && displayedLength < content.length;
+  const visibleText = isLatestAssistant && isGenerating ? sanitizedContent.slice(0, displayedLength) : sanitizedContent;
+  const isStreaming = isLatestAssistant && isGenerating && displayedLength < sanitizedContent.length;
 
   return (
     <div className="ai-response-container text-start" dir={isRtl ? "rtl" : "ltr"}>
@@ -638,7 +654,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
         )}
 
         <button
-          onClick={() => onCopyText(msg.content, idx)}
+          onClick={() => onCopyText(cleanDisplayContent(msg.content), idx)}
           className="inline-flex items-center gap-1 px-2 py-1 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/5 border border-transparent hover:border-[var(--border-color)] transition-all"
           title={isRtl ? "نسخ الرد" : "Copy response"}
         >
@@ -656,7 +672,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
         </button>
 
         <button
-          onClick={() => onSpeak(msg.content)}
+          onClick={() => onSpeak(cleanDisplayContent(msg.content))}
           className="inline-flex items-center gap-1 px-2 py-1 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/5 border border-transparent hover:border-[var(--border-color)] transition-all"
           title={isRtl ? "قراءة صوتية" : "Listen audio"}
         >
@@ -1720,6 +1736,22 @@ export default function Chat() {
                         ...updated[existingIdx],
                         searchSources: finalSources,
                         isWebSearch: true,
+                      };
+                      return updated;
+                    }
+                    return prev;
+                  });
+                } else if (sseData.type === "image" && sseData.imageUrl) {
+                  finalImageUrl = sseData.imageUrl;
+                  responseImageGen = true;
+                  setMessages((prev) => {
+                    const existingIdx = prev.findIndex((m) => m.id === botMessageId);
+                    if (existingIdx !== -1) {
+                      const updated = [...prev];
+                      updated[existingIdx] = {
+                        ...updated[existingIdx],
+                        imageUrl: sseData.imageUrl,
+                        isImageGeneration: true,
                       };
                       return updated;
                     }

@@ -964,6 +964,142 @@ ${lastAssistantText ? `Assistant Context: "${lastAssistantText.slice(0, 200)}"` 
   return "محادثة ذكية 💬";
 }
 
+/**
+ * دالة كشف واستخراج استدعاءات أدوات توليد الصور (Image Generation Tools / dalle.text2im)
+ * ومعالجتها برمجياً وتنظيف النص تماماً من أي أكواد أو كتل JSON
+ */
+interface ExtractedImageAction {
+  hasAction: boolean;
+  prompt: string | null;
+  cleanedText: string;
+}
+
+function extractImageActionFromText(text: string): ExtractedImageAction {
+  if (!text) return { hasAction: false, prompt: null, cleanedText: "" };
+
+  let extractedPrompt: string | null = null;
+  let hasAction = false;
+  let workingText = text;
+
+  // 1. وسوم M7 المخصصة: <M7IMAGE_ACTION>...</M7IMAGE_ACTION> أو <IMAGE_ACTION>...</IMAGE_ACTION>
+  const tagMatch = workingText.match(
+    /<(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>([\s\S]*?)<\/(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>/i
+  );
+  if (tagMatch) {
+    const rawTagContent = tagMatch[1].trim();
+    try {
+      const parsed = JSON.parse(rawTagContent);
+      extractedPrompt =
+        parsed.prompt ||
+        parsed.action_input?.prompt ||
+        parsed.query ||
+        parsed.text ||
+        rawTagContent;
+    } catch {
+      const pMatch = rawTagContent.match(/"prompt"\s*:\s*"([^"]+)"/i);
+      extractedPrompt = pMatch ? pMatch[1] : rawTagContent;
+    }
+    hasAction = true;
+    workingText = workingText.replace(
+      /<(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>[\s\S]*?<\/(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>/gi,
+      ""
+    );
+  }
+
+  // 2. كتل الأكواد (Markdown Code Blocks) التي تحتوي على استدعاء dalle.text2im أو أدوات توليد الصور
+  const codeBlockRegex = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/gi;
+  for (const match of workingText.matchAll(codeBlockRegex)) {
+    const jsonCandidate = match[1];
+    if (/dalle\.text2im|text2im|image_generation|generate_image/i.test(jsonCandidate)) {
+      hasAction = true;
+      try {
+        const parsed = JSON.parse(jsonCandidate);
+        const p =
+          parsed.prompt ||
+          parsed.action_input?.prompt ||
+          parsed.parameters?.prompt ||
+          parsed.arguments?.prompt ||
+          parsed.query;
+        if (p && !extractedPrompt) extractedPrompt = String(p);
+      } catch {
+        const pMatch = jsonCandidate.match(/"prompt"\s*:\s*"([^"]+)"/i);
+        if (pMatch && !extractedPrompt) extractedPrompt = pMatch[1];
+      }
+      workingText = workingText.replace(match[0], "");
+    }
+  }
+
+  // 3. كائنات JSON العادية داخل النص (e.g. {"action": "dalle.text2im", "action_input": {"prompt": "..."}})
+  const rawJsonRegex =
+    /\{[\s\r\n]*"(?:action|tool|name)"[\s\r\n]*:[\s\r\n]*"(?:dalle\.text2im|text2im|image_generation|generate_image)"[\s\S]*?\}(?:\s*\}|\s*\))/gi;
+  for (const match of workingText.matchAll(rawJsonRegex)) {
+    hasAction = true;
+    try {
+      const parsed = JSON.parse(match[0]);
+      const p =
+        parsed.prompt ||
+        parsed.action_input?.prompt ||
+        parsed.parameters?.prompt ||
+        parsed.arguments?.prompt;
+      if (p && !extractedPrompt) extractedPrompt = String(p);
+    } catch {
+      const pMatch = match[0].match(/"prompt"\s*:\s*"([^"]+)"/i);
+      if (pMatch && !extractedPrompt) extractedPrompt = pMatch[1];
+    }
+    workingText = workingText.replace(match[0], "");
+  }
+
+  // 4. استدعاءات الدوال البرمجية: dalle.text2im(...) أو generate_image(...)
+  const fnRegex =
+    /(?:dalle\.text2im|text2im|image_generator|generate_image)\s*\(\s*(\{[\s\S]*?\}|prompt\s*=\s*["'`]([\s\S]*?)["'`]|["'`]([\s\S]*?)["'`])\s*\)/gi;
+  for (const match of workingText.matchAll(fnRegex)) {
+    hasAction = true;
+    const arg = match[1];
+    if (arg && arg.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(arg);
+        if (parsed.prompt && !extractedPrompt) extractedPrompt = parsed.prompt;
+        else if (parsed.action_input?.prompt && !extractedPrompt)
+          extractedPrompt = parsed.action_input.prompt;
+      } catch {
+        const pMatch = arg.match(/"prompt"\s*:\s*"([^"]+)"/i);
+        if (pMatch && !extractedPrompt) extractedPrompt = pMatch[1];
+      }
+    } else {
+      const p = match[2] || match[3] || arg;
+      if (p && !extractedPrompt) extractedPrompt = p;
+    }
+    workingText = workingText.replace(match[0], "");
+  }
+
+  // 5. التحقق الاحتياطي من أي بقايا لنص dalle.text2im في السطور
+  if (/dalle\.text2im/i.test(workingText)) {
+    hasAction = true;
+    const pMatch = workingText.match(/"prompt"\s*:\s*"([^"]+)"/i);
+    if (pMatch && !extractedPrompt) extractedPrompt = pMatch[1];
+    workingText = workingText.replace(/[^\n\r]*dalle\.text2im[^\n\r]*/gi, "");
+    workingText = workingText.replace(/\{[\s\S]*?dalle\.text2im[\s\S]*?\}/gi, "");
+  }
+
+  // تنظيف الفراغات وكتل JSON الفارغة
+  let cleaned = workingText
+    .replace(/```json\s*```/gi, "")
+    .replace(/```\s*```/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // إذا تبقى فقط أقواس أو رموز بدون نص حقيقي
+  if (hasAction && (!cleaned || /^[`\s{};:,.-]+$/.test(cleaned))) {
+    cleaned = "";
+  }
+
+  return {
+    hasAction,
+    prompt: extractedPrompt ? extractedPrompt.trim() : null,
+    cleanedText: cleaned,
+  };
+}
+
 router.post("/", async (req: Request, res) => {
   try {
     const parsed = SendMessageBody.safeParse(req.body);
@@ -985,16 +1121,34 @@ router.post("/", async (req: Request, res) => {
     const userPrompt = lastMessage?.content || "";
     const attachedImage = (req.body as any)?.image as { data: string; mimeType: string } | undefined;
 
-    // 1. التحقق من نية توليد الصور
+    // 1. التحقق الذكي والشامل من نية توليد الصور
     const isImageGenerationExplicit = Boolean((req.body as any)?.generateImage);
-    const isImageGenerationIntent =
-      isImageGenerationExplicit ||
-      /^(اصنع|أنشئ|انشئ|ولد|ولّد|صمم|ارسم|اعمل|أعمل|وهات|هات|عايز\s+صورة|أريد\s+صورة|بدي\s+صورة|صورة\s+لـ|صورة\s+عن|صورة\s+ل|توليد\s+صورة|generate\s+an?\s+image|create\s+an?\s+image|draw\s+an?\s+image|paint\s+an?\s+image|image\s+of|picture\s+of)/i.test(
-        userPrompt.trim()
-      ) ||
-      /(اصنع\s+صورة|أنشئ\s+صورة|انشئ\s+صورة|ولّد\s+صورة|ولد\s+صورة|ارسم\s+صورة|صمم\s+صورة|generate\s+image|draw\s+image|create\s+image)/i.test(
+    const isExplainingHowImagesWork =
+      /^(كيف\s+(يعمل|يتم|نستخدم)|ما\s+هو\s+توليد|ما\s+هي\s+طريقة|شرح|طريقة|how\s+does|what\s+is\s+image\s+generation|explain\s+how)/i.test(
         userPrompt.trim()
       );
+
+    const isImageGenerationIntent =
+      !isExplainingHowImagesWork &&
+      (isImageGenerationExplicit ||
+        // أنماط طلب الصور باللغة العربية (سواء بدأت الجملة بطلب صورة أو احتوت عليه)
+        /(ارسم|ارسمي|رسمة|صورلي|صورة|تصميم|بوستر|لوحة|انشئ|أنشئ|اصنع|ولّد|ولد|صمم|اعمل|اعملي|هات|طلع|وريني|عايز|عاوز|أريد|اريد|بدي|ابغى|أبغى|ممكن|لو سمحت).*(صورة|رسمة|لوحة|تصميم|بوستر|خلفية|رمزية|شخصية)/i.test(
+          userPrompt
+        ) ||
+        /^(اصنع|أنشئ|انشئ|ولد|ولّد|صمم|ارسم|اعمل|أعمل|وهات|هات|عايز\s+صورة|أريد\s+صورة|بدي\s+صورة|صورة\s+لـ|صورة\s+عن|صورة\s+ل|توليد\s+صورة|ارسم\s+لي|صمم\s+لي|صور\s+لي|اعمل\s+لي|تخيل\s+شكل)/i.test(
+          userPrompt.trim()
+        ) ||
+        /(اصنع\s+صورة|أنشئ\s+صورة|انشئ\s+صورة|ولّد\s+صورة|ولد\s+صورة|ارسم\s+صورة|صمم\s+صورة|توليد\s+صورة|رسم\s+صورة)/i.test(
+          userPrompt
+        ) ||
+        // أنماط طلب الصور باللغة الإنجليزية
+        /^(generate\s+an?\s+image|create\s+an?\s+image|draw\s+an?\s+image|paint\s+an?\s+image|image\s+of|picture\s+of|photo\s+of|draw\s+me|make\s+an?\s+image)/i.test(
+          userPrompt.trim()
+        ) ||
+        /(generate|create|draw|paint|sketch|render|produce)\s+(an?\s+)?(image|picture|photo|artwork|drawing|illustration|poster|graphic)/i.test(
+          userPrompt
+        ) ||
+        /(dalle\.text2im|text2im|image_generation)/i.test(userPrompt));
 
     // إعدادات البث المباشر (Streaming Responses) عبر Server-Sent Events (SSE) لتقليل زمن الاستجابة إلى أدنى حد
     const isStreamRequested = Boolean(
@@ -1223,6 +1377,15 @@ CRITICAL OPERATIONAL RULES & INTELLIGENCE DIRECTIVES:
    - High-Precision Speech Transcription (تحويل الصوت إلى نص بدقة عالية): Accurately transcribe the spoken audio into text in the exact language spoken, adhering strictly to its original alphabet and native script.
    - Zero Unsolicited Translation (الالتزام بلغة الصوت الأصلية): Do NOT translate the transcribed audio into another language unless the user explicitly requests translation.
    - Multilingual Audio Mastery (إتقان التعامل مع التسجيلات متعددة اللغات): If the user speaks multiple languages within the same recording, accurately transcribe each portion in its respective native language and script.
+
+12. IMAGE GENERATION ACTION PROTOCOL & ZERO RAW JSON LEAKAGE (توليد الصور الفنية ومنع تسريب أكواد الـ JSON نهائياً):
+   - You have native integration with a high-definition automated image generator (FLUX / Diffusion).
+   - When the user asks to generate, create, draw, design, paint, sketch, or show an image/artwork (e.g. "ارسم", "صمم", "صورة لـ", "generate image", "draw", "picture of"):
+     • Trigger image generation using this format:
+       <M7IMAGE_ACTION>{"prompt": "ultra-detailed English visual prompt describing subject, composition, cinematic lighting, 8k resolution, photorealistic masterpiece"}</M7IMAGE_ACTION>
+     • If using a tool action format like dalle.text2im or image_generation, ALWAYS wrap it inside <M7IMAGE_ACTION>{"prompt": "..."}</M7IMAGE_ACTION>.
+     • CRITICAL ZERO-LEAKAGE MANDATE (منع تسريب أكواد الـ JSON نهائياً): NEVER output raw tool JSON, raw code blocks of actions (e.g. 'json {\"action\": \"dalle.text2im\"}'), or technical arguments as conversational text for the user to read.
+     • ALWAYS provide a warm, courteous, brief natural language response in the user's language (e.g., "تم توليد الصورة الفنية المطلوبة لك بأعلى درجات الدقة والجمال! 🎨✨" or "Here is your generated artwork! 🎨✨"). The generated image will automatically appear directly in the user's interface.
 ${fullMemorySection}`;
 
     const ai = getAiClient();
@@ -1371,13 +1534,39 @@ ${fullMemorySection}`;
               });
 
               const responseStream = await withTimeout(streamPromise, timeoutMs);
+              let streamOutputBuffer = "";
+              let isSuppressingToolOutput = false;
+
               for await (const chunk of responseStream) {
                 const text = chunk.text;
                 if (text) {
                   firstChunkReceived = true;
                   rawAiText += text;
-                  if (isStreamRequested) {
-                    sendSse({ type: "chunk", text });
+
+                  // Stream suppression check: منع تسريب أكواد الأدوات والـ JSON للواجهة
+                  if (!isSuppressingToolOutput) {
+                    const combined = streamOutputBuffer + text;
+                    if (
+                      /<(?:M7IMAGE_ACTION|IMAGE_ACTION)|dalle\.text2im|text2im|(?:"action"|"tool"|"name")\s*:\s*"(?:dalle\.text2im|image_generation|text2im|generate_image)"|```(?:json)?\s*\{[\s\S]*?"(?:action|tool|name)"/i.test(
+                        combined
+                      )
+                    ) {
+                      isSuppressingToolOutput = true;
+                      const preToolText = combined.split(
+                        /<(?:M7IMAGE_ACTION|IMAGE_ACTION)|dalle\.text2im|text2im|\{"action"|\{"tool"|```(?:json)?\s*\{/i
+                      )[0];
+                      if (preToolText && preToolText.length > streamOutputBuffer.length) {
+                        const newCleanChunk = preToolText.slice(streamOutputBuffer.length);
+                        if (isStreamRequested && newCleanChunk.trim().length > 0) {
+                          sendSse({ type: "chunk", text: newCleanChunk });
+                        }
+                      }
+                    } else {
+                      streamOutputBuffer = combined;
+                      if (isStreamRequested) {
+                        sendSse({ type: "chunk", text });
+                      }
+                    }
                   }
                 }
 
@@ -1457,13 +1646,39 @@ ${fullMemorySection}`;
             });
 
             const responseStream = await withTimeout(streamPromise, timeoutMs);
+            let streamOutputBuffer = "";
+            let isSuppressingToolOutput = false;
+
             for await (const chunk of responseStream) {
               const text = chunk.text;
               if (text) {
                 firstChunkReceived = true;
                 rawAiText += text;
-                if (isStreamRequested) {
-                  sendSse({ type: "chunk", text });
+
+                // Stream suppression check: منع تسريب أكواد الأدوات والـ JSON للواجهة
+                if (!isSuppressingToolOutput) {
+                  const combined = streamOutputBuffer + text;
+                  if (
+                    /<(?:M7IMAGE_ACTION|IMAGE_ACTION)|dalle\.text2im|text2im|(?:"action"|"tool"|"name")\s*:\s*"(?:dalle\.text2im|image_generation|text2im|generate_image)"|```(?:json)?\s*\{[\s\S]*?"(?:action|tool|name)"/i.test(
+                      combined
+                    )
+                  ) {
+                    isSuppressingToolOutput = true;
+                    const preToolText = combined.split(
+                      /<(?:M7IMAGE_ACTION|IMAGE_ACTION)|dalle\.text2im|text2im|\{"action"|\{"tool"|```(?:json)?\s*\{/i
+                    )[0];
+                    if (preToolText && preToolText.length > streamOutputBuffer.length) {
+                      const newCleanChunk = preToolText.slice(streamOutputBuffer.length);
+                      if (isStreamRequested && newCleanChunk.trim().length > 0) {
+                        sendSse({ type: "chunk", text: newCleanChunk });
+                      }
+                    }
+                  } else {
+                    streamOutputBuffer = combined;
+                    if (isStreamRequested) {
+                      sendSse({ type: "chunk", text });
+                    }
+                  }
                 }
               }
             }
@@ -1530,6 +1745,52 @@ ${fullMemorySection}`;
       }
     }
 
+    // فحص ومعالجة استدعاءات أداة توليد الصور (Image Generation Tools / dalle.text2im) برمجياً
+    const imageAction = extractImageActionFromText(rawAiText);
+    if (imageAction.hasAction && !generatedImageUrl) {
+      isImageGeneration = true;
+      const promptToUse = imageAction.prompt || userPrompt;
+      console.log("🎨 Intercepted model image tool call (dalle.text2im / action). Prompt:", promptToUse);
+
+      const imageLimitInfo = plan === "free" ? getUserImageUsage(userId) : { count: 0 };
+      if (plan === "free" && imageLimitInfo.count >= 5) {
+        const isEnglishPrompt = /[a-zA-Z]{4,}/.test(userPrompt);
+        rawAiText = isEnglishPrompt
+          ? "⚠️ You have reached your daily limit of 5 free AI images! 🎨\n\nUpgrade to M7 PRO ($5/mo) for unlimited image generation and turbo speed! 👑⚡"
+          : "⚠️ لقد استنفدت رصيدك المجاني اليومي لتوليد الصور (5 صور/يوم)! 🎨\n\nقم بالترقية إلى باقة M7 PRO (بـ 5$ فقط) لإنشاء صور لا محدودة وسرعة فائقة! 👑⚡";
+      } else {
+        try {
+          const highQualityPrompt = await buildHighQualityImagePrompt(promptToUse, ai);
+          const encodedPrompt = encodeURIComponent(highQualityPrompt);
+          const randomSeed = Math.floor(Math.random() * 9000000) + 1000000;
+          generatedImageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${randomSeed}&model=flux&enhance=true`;
+
+          incrementDailyImageCount(userId);
+
+          let cleanText = imageAction.cleanedText;
+          if (!cleanText || cleanText.trim().length === 0) {
+            const isEnglish = /[a-zA-Z]{4,}/.test(userPrompt) || /[a-zA-Z]{4,}/.test(promptToUse);
+            if (isEnglish) {
+              cleanText = `Here is your high-definition AI generated artwork! 🎨✨\n\nWould you like me to adjust any visual details or explore another creative concept for you? 🔍💡`;
+            } else {
+              cleanText = `تم توليد الصورة الفنية المطلوبة لك بأعلى درجات الدقة والجمال! 🎨✨\n\nهل تود أن أعدل لك بعض التفاصيل في هذا التصميم أو أنشئ لك مفهوماً بصرياً آخر؟ 🔍💡`;
+            }
+          }
+
+          rawAiText = cleanText;
+
+          if (isStreamRequested) {
+            sendSse({ type: "image", imageUrl: generatedImageUrl, isImageGeneration: true });
+          }
+        } catch (imgErr) {
+          console.error("Error executing intercepted image action:", imgErr);
+          rawAiText = imageAction.cleanedText || rawAiText;
+        }
+      }
+    } else if (imageAction.hasAction) {
+      rawAiText = imageAction.cleanedText || rawAiText;
+    }
+
     // استخراج وتخزين الذاكرة الجديدة مع احترام حدود الباقة (100 معلومة للمجاني و1000 لباقة PRO)
     const newFacts = extractMemoryTags(rawAiText);
     if (newFacts.length > 0) {
@@ -1589,7 +1850,15 @@ ${fullMemorySection}`;
             gibberishCheck.isGibberish
           );
 
-    const aiText = stripMemoryTags(textWithoutSuggestions);
+    const rawCleanText = stripMemoryTags(textWithoutSuggestions);
+    const aiText = rawCleanText
+      .replace(/<(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>[\s\S]*?<\/(?:M7IMAGE_ACTION|IMAGE_ACTION|image_generation)>/gi, "")
+      .replace(/```(?:json)?\s*\{[\s\S]*?(?:dalle\.text2im|text2im|image_generation|generate_image)[\s\S]*?\}\s*```/gi, "")
+      .replace(/\{[\s\r\n]*"(?:action|tool|name)"[\s\r\n]*:[\s\r\n]*"(?:dalle\.text2im|text2im|image_generation|generate_image)"[\s\S]*?\}(?:\s*\}|\s*\))/gi, "")
+      .replace(/(?:dalle\.text2im|text2im|generate_image)\s*\([\s\S]*?\)/gi, "")
+      .replace(/^[^\n\r]*dalle\.text2im[^\n\r]*/gmi, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
     // 4. Resolve or create unique conversation record
     let effectiveConversationId = conversationId?.trim() || null;
