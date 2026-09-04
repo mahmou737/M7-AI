@@ -5,7 +5,7 @@
  */
 
 import { Router, Request } from "express";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { eq, and, desc } from "drizzle-orm";
 import { SendMessageBody } from "../../lib/api-zod/src/index.js";
 import {
@@ -20,7 +20,7 @@ const router = Router();
 const MEMORY_TAG_RE = /<M7MEMORY>([\s\S]*?)<\/M7MEMORY>/g;
 
 // تتبع انتهاء حصة أداة البحث لتجنب أخطاء 429 وتخطيها تلقائياً نحو البحث الحي
-let googleSearchGroundingQuotaExhaustedUntil = 0;
+let googleSearchGroundingQuotaExhaustedUntil = Date.now() + 60 * 60 * 1000;
 
 // تتبع استهلاك الصور اليومي لكل مستخدم مع التجديد التلقائي بعد 24 ساعة (24-Hour Daily Image Limit Tracker)
 interface UserImageUsageRecord {
@@ -308,10 +308,9 @@ async function buildHighQualityImagePrompt(userPrompt: string, ai: GoogleGenAI |
   // 1. محاولة صياغة الـ Prompt عبر Gemini بنماذج فائقة السرعة مع مهلة ذكية ومعالجة صامتة للأخطاء المؤقتة
   if (ai) {
     const promptModels = [
-      "gemini-3.7-flash",
-      "gemini-flash-latest",
       "gemini-3.1-flash-lite",
-      "gemini-2.5-flash",
+      "gemini-3.8-flash",
+      "gemini-flash-latest",
     ];
     for (const pModel of promptModels) {
       try {
@@ -440,6 +439,10 @@ async function executeWithBackoff<T>(
     } catch (err: any) {
       attempt++;
       const errStr = String(err?.message || err?.status || err || "");
+      const isHardFailure = /NOT_FOUND|404|no longer available|exceeded\s*your\s*current\s*quota/i.test(errStr);
+      if (isHardFailure) {
+        throw err;
+      }
       const isTransient = /503|UNAVAILABLE|high demand|429|RESOURCE_EXHAUSTED|rate limit|fetch failed|ECONNRESET|ETIMEDOUT/i.test(errStr);
       if (attempt > maxRetries || !isTransient) {
         throw err;
@@ -890,7 +893,12 @@ async function generateSmartConversationTitle(
 
   // 1. محاولة توليد عنوان ذكي باستخدام الذكاء الاصطناعي السريع
   if (ai && conversationSample.length > 0) {
-    const titleModels = ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    const titleModels = [
+      "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest",
+    ];
     for (const tModel of titleModels) {
       try {
         const titlePromise = ai.models.generateContent({
@@ -988,6 +996,30 @@ router.post("/", async (req: Request, res) => {
         userPrompt.trim()
       );
 
+    // إعدادات البث المباشر (Streaming Responses) عبر Server-Sent Events (SSE) لتقليل زمن الاستجابة إلى أدنى حد
+    const isStreamRequested = Boolean(
+      (req.body as any)?.stream ||
+      req.query?.stream === "true" ||
+      req.headers.accept?.includes("text/event-stream")
+    );
+
+    if (isStreamRequested) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+    }
+
+    const sendSse = (data: any) => {
+      if (isStreamRequested && !res.writableEnded) {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        if (typeof (res as any).flush === "function") {
+          (res as any).flush();
+        }
+      }
+    };
+
     // التحقق من حدود باقة الصور اليومية (Tier Limit: 5 images/day for Free, Unlimited for PRO)
     const isRequestingImageFeature = isImageGenerationIntent || Boolean(attachedImage);
     const isEnglishPrompt = /[a-zA-Z]{4,}/.test(userPrompt);
@@ -1020,6 +1052,26 @@ router.post("/", async (req: Request, res) => {
               "كيف أحصل على صور غير محدودة؟ 🎨",
             ];
 
+        if (isStreamRequested) {
+          sendSse({
+            type: "done",
+            conversationId: conversationId?.trim() || null,
+            message: paywallMessage,
+            role: "assistant",
+            imageUrl: null,
+            isWebSearch: false,
+            isImageGeneration: false,
+            searchSources: [],
+            suggestions: paywallSuggestions,
+            limitReached: true,
+            limitType: "images",
+            remainingMs: usageInfo.remainingMs,
+            resetAt: usageInfo.resetAt,
+          });
+          res.end();
+          return;
+        }
+
         res.json({
           conversationId: conversationId?.trim() || null,
           message: paywallMessage,
@@ -1038,18 +1090,21 @@ router.post("/", async (req: Request, res) => {
       }
     }
 
-    // 2. الذكاء التلقائي والبحث الذاتي (Auto Grounding / Web Search)
+    // 2. الذكاء التلقائي والبحث الذاتي (Google Search Grounding / Real-Time Daily Events & News)
+    // التحديث الآلي للأحداث اليومية: تفعيل البحث اللحظي لجلب أحدث الأخبار والمعلومات اليومية الحالية تلقائياً
     const userRequestedWebSearchExplicit = Boolean(
       (req.body as any)?.useWebSearch || (req.body as any)?.webSearch
     );
     const hasLiveSearchKeywords =
-      /(أخبار|اخبار|اليوم|الآن|الكرة الذهبية|من هو|من هي|من الفائز|كم سعر|سعر|أسعار|اسعار|نتائج|مباراة|مباريات|طقس|أحدث|جديد|مقارنة|مواصفات|إحصائيات|تحديث|تحديثات|news|latest|today|current|price|prices|weather|who is|who won|score|match|specs|vs|versus|2024|2025|2026)/i.test(
+      /(أخبار|اخبار|اليوم|الآن|النهارده|اليومي|الأحداث|أحداث|حدث|عاجل|الليلة|الأسبوع|الشهر|السنة|هذا العام|سعر|أسعار|دولار|ذهب|فضة|يورو|بيتكوين|عملة|عملات|سهم|أسهم|بورصة|مباراة|مباريات|كورة|كرة قدم|دوري|كأس|نتيجة|أهداف|ترتيب|طقس|الجو|درجة الحرارة|درجات الحرارة|أحدث|جديد|آخر|مستجدات|تطورات|مقارنة|مواصفات|إحصائيات|تحديث|تحديثات|الكرة الذهبية|انتخابات|news|latest|today|tonight|current|live|price|prices|weather|who is|who won|score|match|standings|specs|vs|versus|2024|2025|2026)/i.test(
         userPrompt
       ) ||
-      /^(ما هو|ما هي|من هو|من هي|متى|أين|كيف|كم|هل|what is|who is|when did|where is|how much|is there)/i.test(
+      /^(ما هو|ما هي|من هو|من هي|ماذا حدث|متى|أين|كيف|كم|هل|what is|who is|when did|where is|how much|is there|what happened)/i.test(
         userPrompt.trim()
       );
-    const userRequestedWebSearch = userRequestedWebSearchExplicit || (hasLiveSearchKeywords && !attachedImage && !isImageGenerationIntent);
+    const userRequestedWebSearch =
+      userRequestedWebSearchExplicit ||
+      (hasLiveSearchKeywords && !attachedImage && !isImageGenerationIntent);
 
     // 3. تحديد شخصية الذكاء الاصطناعي المختارة والتحقق من صلاحية البرو
     const requestedPersonaId = ((req.body as any)?.personaId as PersonaId) || "general";
@@ -1185,6 +1240,9 @@ ${fullMemorySection}`;
         : "لم أستطع فهم قصدك بشكل كامل، هل يمكنك توضيح سؤالك أو إعادة صياغته لأتمكن من مساعدتك بدقة؟ 💡";
 
       rawAiText = clarifyMsg;
+      if (isStreamRequested) {
+        sendSse({ type: "chunk", text: clarifyMsg });
+      }
     } else if (isImageGenerationIntent && !attachedImage) {
       // ── IMAGE GENERATION HANDLING (توليد الصور الدقيق) ─────────────────────────
       isImageGeneration = true;
@@ -1213,9 +1271,15 @@ ${fullMemorySection}`;
         const topicName = subjectPreview ? `(${subjectPreview})` : "";
         rawAiText = `تم توليد الصورة لك بأعلى درجات الدقة والجمال الفني ${topicName}! 🎨✨\n\nهل تود أن أعدل لك بعض التفاصيل في هذا التصميم أو أنشئ لك مفهوماً بصرياً آخر؟ 🔍💡`;
       }
+      if (isStreamRequested) {
+        sendSse({ type: "chunk", text: rawAiText });
+      }
     } else if (!ai) {
       // Fallback message when API key is not yet set
       rawAiText = "أهلاً بك في M7 AI! 🤖✨ يرجى تفعيل مفتاح `GEMINI_API_KEY` في إعدادات البيئة للبدء فوراً.\n\nهل تود أن أستعرض لك خطوات الضبط أو أساعدك في أي استفسار آخر؟ 🔍💡";
+      if (isStreamRequested) {
+        sendSse({ type: "chunk", text: rawAiText });
+      }
     } else {
       // ── CONSTRUCT CONTENTS (TEXT + OPTIONAL ATTACHED IMAGE) ─────────────────
       let liveWebContext = "";
@@ -1233,46 +1297,31 @@ ${fullMemorySection}`;
               domain: r.domain,
             });
           }
+          if (isStreamRequested && searchSources.length > 0) {
+            sendSse({ type: "sources", sources: searchSources, isWebSearch: true });
+          }
         }
       }
 
       const contents = sanitizeForGemini(messages, attachedImage, liveWebContext);
 
-      // ضبط قائمة النماذج ومعاملات الاستجابة الفائقة (Turbo Speed / Priority Queue) بناءً على رتبة المستخدم (userTier)
+      // ضبط قائمة النماذج ومعاملات الاستجابة الفائقة (Turbo Speed / Low Latency Streaming)
       const isTurboTier = userTier === "pro";
       const maxOutputTokens = isTurboTier ? 8192 : 2048;
       const modelTemperature = isTurboTier ? 0.3 : 0.4;
 
-      // Priority Queue: باقة PRO تمنح أولوية قصوى للمعالجة ونماذج الاستدلال الأقوى
-      const searchModels =
-        isTurboTier
-          ? [
-              { model: "gemini-3.7-flash", timeoutMs: 25000 },
-              { model: "gemini-flash-latest", timeoutMs: 20000 },
-              { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
-              { model: "gemini-2.5-flash", timeoutMs: 18000 },
-            ]
-          : [
-              { model: "gemini-3.1-flash-lite", timeoutMs: 15000 },
-              { model: "gemini-flash-latest", timeoutMs: 18000 },
-              { model: "gemini-3.7-flash", timeoutMs: 20000 },
-              { model: "gemini-2.5-flash", timeoutMs: 18000 },
-            ];
+      // نماذج فائقة السرعة وعالية التوافر مع تفضيل النموذج الأسرع والأنشط بدون أخطاء 503
+      const searchModels = [
+        { model: "gemini-3.1-flash-lite", timeoutMs: 14000 },
+        { model: "gemini-3.8-flash", timeoutMs: 14000 },
+        { model: "gemini-flash-latest", timeoutMs: 12000 },
+      ];
 
-      const chatModels =
-        isTurboTier
-          ? [
-              { model: "gemini-3.7-flash", timeoutMs: 25000 },
-              { model: "gemini-flash-latest", timeoutMs: 20000 },
-              { model: "gemini-3.1-flash-lite", timeoutMs: 18000 },
-              { model: "gemini-2.5-flash", timeoutMs: 18000 },
-            ]
-          : [
-              { model: "gemini-3.1-flash-lite", timeoutMs: 15000 },
-              { model: "gemini-flash-latest", timeoutMs: 18000 },
-              { model: "gemini-3.7-flash", timeoutMs: 20000 },
-              { model: "gemini-2.5-flash", timeoutMs: 18000 },
-            ];
+      const chatModels = [
+        { model: "gemini-3.1-flash-lite", timeoutMs: 14000 },
+        { model: "gemini-3.8-flash", timeoutMs: 14000 },
+        { model: "gemini-flash-latest", timeoutMs: 12000 },
+      ];
 
       let success = false;
       let lastErr: any = null;
@@ -1299,101 +1348,142 @@ ${fullMemorySection}`;
         return 0;
       };
 
-      // 1. محاولة البحث المباشر عبر Google Search Grounding مع مهلة زمنية ذكية وتراجع أسي
+      // 1. محاولة البحث المباشر عبر Google Search Grounding مع البث المباشر (generateContentStream)
       if (userRequestedWebSearch && !attachedImage && Date.now() > googleSearchGroundingQuotaExhaustedUntil) {
-        for (const { model, timeoutMs } of searchModels) {
-          if (success) break;
+        const alreadyHasLiveSources = searchSources.length >= 2 && liveWebContext.length > 50;
 
-          try {
-            const response = await executeWithBackoff(
-              () =>
-                ai.models.generateContent({
-                  model,
-                  contents,
-                  config: {
-                    systemInstruction: supremeSystemPrompt,
-                    temperature: modelTemperature,
-                    maxOutputTokens,
-                    tools: [{ googleSearch: {} }],
-                  },
-                }),
-              timeoutMs
-            );
-            const text = response.text?.trim();
-            if (text) {
-              rawAiText = text;
-              success = true;
+        if (!alreadyHasLiveSources) {
+          for (const { model, timeoutMs } of searchModels) {
+            if (success) break;
+            let firstChunkReceived = false;
 
-              // استخراج مصادر البحث الحقيقية من Grounding Metadata
-              const candidate = response.candidates?.[0];
-              const groundingMetadata = candidate?.groundingMetadata as any;
-              if (groundingMetadata) {
-                const chunks = groundingMetadata.groundingChunks || [];
-                const seenUris = new Set(searchSources.map((s) => s.uri));
-                for (const chunk of chunks) {
-                  const uri = chunk.web?.uri;
-                  if (uri && !seenUris.has(uri)) {
-                    seenUris.add(uri);
-                    let domain = "";
-                    try {
-                      domain = new URL(uri).hostname.replace(/^www\./, "");
-                    } catch {
-                      domain = "google.com";
+            try {
+              const streamPromise = ai.models.generateContentStream({
+                model,
+                contents,
+                config: {
+                  systemInstruction: supremeSystemPrompt,
+                  temperature: modelTemperature,
+                  maxOutputTokens,
+                  thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                  tools: [{ googleSearch: {} }],
+                },
+              });
+
+              const responseStream = await withTimeout(streamPromise, timeoutMs);
+              for await (const chunk of responseStream) {
+                const text = chunk.text;
+                if (text) {
+                  firstChunkReceived = true;
+                  rawAiText += text;
+                  if (isStreamRequested) {
+                    sendSse({ type: "chunk", text });
+                  }
+                }
+
+                // استخراج مصادر البحث الحقيقية من Grounding Metadata وإرسالها فوراً
+                const candidate = chunk.candidates?.[0];
+                const groundingMetadata = candidate?.groundingMetadata as any;
+                if (groundingMetadata?.groundingChunks) {
+                  let addedNew = false;
+                  const seenUris = new Set(searchSources.map((s) => s.uri));
+                  for (const gChunk of groundingMetadata.groundingChunks) {
+                    const uri = gChunk.web?.uri;
+                    if (uri && !seenUris.has(uri)) {
+                      seenUris.add(uri);
+                      let domain = "";
+                      try {
+                        domain = new URL(uri).hostname.replace(/^www\./, "");
+                      } catch {
+                        domain = "google.com";
+                      }
+                      searchSources.push({
+                        title: gChunk.web?.title || domain || "مصدر الويب",
+                        uri,
+                        domain,
+                      });
+                      addedNew = true;
                     }
-                    searchSources.push({
-                      title: chunk.web?.title || domain || "نتيجة بحث ويب",
-                      uri,
-                      domain,
-                    });
+                  }
+                  if (addedNew && isStreamRequested) {
+                    sendSse({ type: "sources", sources: searchSources, isWebSearch: true });
                   }
                 }
               }
-              break;
+
+              if (firstChunkReceived || rawAiText.trim().length > 0) {
+                success = true;
+                break;
+              }
+            } catch (err: any) {
+              const errStr = String(err?.message || err?.status || err || "");
+              const isQuotaErr = /exceeded\s*your\s*current\s*quota|RESOURCE_EXHAUSTED|429/i.test(errStr);
+              if (isQuotaErr) {
+                googleSearchGroundingQuotaExhaustedUntil = Date.now() + 60 * 60 * 1000;
+              }
+              console.info(`[Search Grounding] Model ${model} ${isQuotaErr ? "quota reached (429)" : "busy"}, falling back to live web context stream`);
+              lastErr = err;
+              const retrySec = parseRetryDelay(err);
+              if (retrySec > 0) detectedRetrySeconds = retrySec;
+
+              if (firstChunkReceived) {
+                success = true;
+                break;
+              }
+              if (isQuotaErr) {
+                break;
+              }
             }
-          } catch (err: any) {
-            const errStr = String(err?.message || err?.status || err || "");
-            const isQuotaErr = /exceeded\s*your\s*current\s*quota|RESOURCE_EXHAUSTED|429/i.test(errStr);
-            if (isQuotaErr) {
-              googleSearchGroundingQuotaExhaustedUntil = Date.now() + 5 * 60 * 1000;
-            }
-            console.warn(`Search grounding attempt with ${model} failed/timed out:`, err?.message || err);
-            lastErr = err;
-            const retrySec = parseRetryDelay(err);
-            if (retrySec > 0) detectedRetrySeconds = retrySec;
           }
         }
       }
 
-      // 2. الوضع المعتاد أو مسار الطوارئ السريع في حال تعذر Grounding
+      // 2. البث المباشر للدردشة القياسية (Streaming Responses) مع تقليل زمن الاستجابة
       if (!success) {
         for (const { model, timeoutMs } of chatModels) {
           if (success) break;
+          let firstChunkReceived = false;
 
           try {
-            const response = await executeWithBackoff(
-              () =>
-                ai.models.generateContent({
-                  model,
-                  contents,
-                  config: {
-                    systemInstruction: supremeSystemPrompt,
-                    temperature: modelTemperature,
-                    maxOutputTokens,
-                  },
-                }),
-              timeoutMs
-            );
-            const text = response.text?.trim();
-            if (text) {
-              rawAiText = text;
+            const streamPromise = ai.models.generateContentStream({
+              model,
+              contents,
+              config: {
+                systemInstruction: supremeSystemPrompt,
+                temperature: modelTemperature,
+                maxOutputTokens,
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              },
+            });
+
+            const responseStream = await withTimeout(streamPromise, timeoutMs);
+            for await (const chunk of responseStream) {
+              const text = chunk.text;
+              if (text) {
+                firstChunkReceived = true;
+                rawAiText += text;
+                if (isStreamRequested) {
+                  sendSse({ type: "chunk", text });
+                }
+              }
+            }
+
+            if (firstChunkReceived || rawAiText.trim().length > 0) {
               success = true;
               break;
             }
           } catch (err: any) {
-            console.warn(`Standard chat attempt with ${model} failed/timed out:`, err?.message || err);
+            const errStr = String(err?.message || err?.status || err || "");
+            const isOverloaded = /503|UNAVAILABLE|high demand/i.test(errStr);
+            const isQuotaErr = /exceeded\s*your\s*current\s*quota|RESOURCE_EXHAUSTED|429/i.test(errStr);
+            console.info(`[Chat Stream] Model ${model} ${isOverloaded ? "temporarily busy (503)" : isQuotaErr ? "rate limited (429)" : "failed"}, switching to next model`);
             lastErr = err;
             const retrySec = parseRetryDelay(err);
             if (retrySec > 0) detectedRetrySeconds = retrySec;
+            if (firstChunkReceived) {
+              success = true;
+              break;
+            }
           }
         }
       }
@@ -1432,6 +1522,10 @@ ${fullMemorySection}`;
           } else {
             rawAiText = `أهلاً بك! 🌟 الخدمة مشغولة لحظياً بسبب حدود الاستخدام المجاني (Rate Limit). يرجى الانتظار قليلاً${timeNotice} ثم الضغط على زر "إعادة المحاولة" لتصلك الإجابة فوراً! 🚀\n\nلو تحب أعيد المحاولة ليك على استفسارك ده أول ما يتاح؟ 🔍💡`;
           }
+        }
+
+        if (isStreamRequested) {
+          sendSse({ type: "chunk", text: rawAiText });
         }
       }
     }
@@ -1594,22 +1688,46 @@ ${fullMemorySection}`;
       }
     }
 
-    res.json({
-      conversationId: effectiveConversationId,
-      message: aiText,
-      role: "assistant",
-      imageUrl: generatedImageUrl,
-      isWebSearch,
-      isImageGeneration,
-      searchSources: searchSources.slice(0, 5),
-      suggestions: finalSuggestions,
-      userTier,
-      turboSpeed: isProTier,
-    });
+    if (isStreamRequested) {
+      sendSse({
+        type: "done",
+        conversationId: effectiveConversationId,
+        message: aiText,
+        role: "assistant",
+        imageUrl: generatedImageUrl,
+        isWebSearch,
+        isImageGeneration,
+        searchSources: searchSources.slice(0, 5),
+        suggestions: finalSuggestions,
+        userTier,
+        turboSpeed: isProTier,
+      });
+      res.end();
+    } else {
+      res.json({
+        conversationId: effectiveConversationId,
+        message: aiText,
+        role: "assistant",
+        imageUrl: generatedImageUrl,
+        isWebSearch,
+        isImageGeneration,
+        searchSources: searchSources.slice(0, 5),
+        suggestions: finalSuggestions,
+        userTier,
+        turboSpeed: isProTier,
+      });
+    }
   } catch (err) {
     console.error("Server error in /api/chat:", err);
     const errorMessage =
       err instanceof Error ? err.message : "حدث خطأ في الخادم الداخلي";
+    if (res.headersSent) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: "error", error: errorMessage })}\n\n`);
+        res.end();
+      } catch {}
+      return;
+    }
     res.status(500).json({ error: errorMessage });
   }
 });

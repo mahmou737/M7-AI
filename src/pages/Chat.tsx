@@ -1598,9 +1598,10 @@ export default function Chat() {
 
       const freshChatForApi = getStoredChatById(currentChatId) || chats.find((c) => c.id === currentChatId);
       const apiMessages = freshChatForApi && Array.isArray(freshChatForApi.messages) ? freshChatForApi.messages : [];
+      const botMessageId = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
 
       try {
-        // 4. إرسال الطلب للـ API مقترناً برسائل هذا الشات فقط و الـ ID المعتمد
+        // 4. إرسال الطلب للـ API مع البث المباشر (Streaming Responses) لتقليل زمن الاستجابة إلى أدنى حد
         const payloadMessages = apiMessages.map((m, idx) => {
           const isLatest = idx === apiMessages.length - 1;
           let contentToSend = m.content;
@@ -1615,56 +1616,180 @@ export default function Chat() {
           };
         });
 
-        const response = await sendMessageMutation.mutateAsync(
-          {
-            data: {
-              messages: payloadMessages,
-              conversationId: currentChatId,
-              personaId: selectedPersona,
-              useWebSearch: isSearch,
-              generateImage: isImgGen,
-              image: currentImage
-                ? {
-                    data: currentImage.data,
-                    mimeType: currentImage.mimeType,
-                  }
-                : undefined,
-            } as any,
+        const userPlan = plan === "pro" ? "pro" : "free";
+        const authUserId = user?.id || "anonymous";
+        const authHeader = `Bearer ${encodeURIComponent(`${authUserId}:${userPlan}`)}`;
+
+        const responseStream = await fetch("/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream, application/json",
+            Authorization: authHeader,
+            "x-user-plan": userPlan,
           },
-          {
-            request: {
-              signal: abortController.signal,
-            },
-          } as any
-        );
+          body: JSON.stringify({
+            messages: payloadMessages,
+            conversationId: currentChatId,
+            personaId: selectedPersona,
+            useWebSearch: isSearch,
+            generateImage: isImgGen,
+            userPlan,
+            stream: true,
+            image: currentImage
+              ? {
+                  data: currentImage.data,
+                  mimeType: currentImage.mimeType,
+                }
+              : undefined,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (abortController.signal.aborted) return;
+
+        const isSse = responseStream.headers.get("content-type")?.includes("text/event-stream");
+
+        let streamAccumulatedText = "";
+        let finalImageUrl: string | null = null;
+        let finalSources: Array<{ title: string; uri: string; domain?: string }> | undefined = undefined;
+        let finalSuggestions: string[] | undefined = undefined;
+        let responseWebSearch = isSearch;
+        let responseImageGen = isImgGen;
+        let limitReached = false;
+
+        if (isSse && responseStream.body) {
+          const reader = responseStream.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let sseBuffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            sseBuffer += decoder.decode(value, { stream: true });
+            const sseLines = sseBuffer.split("\n");
+            sseBuffer = sseLines.pop() || "";
+
+            for (const line of sseLines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+              const jsonStr = trimmed.replace(/^data:\s*/, "");
+              if (!jsonStr) continue;
+
+              try {
+                const sseData = JSON.parse(jsonStr);
+
+                if (sseData.type === "chunk" && sseData.text) {
+                  streamAccumulatedText += sseData.text;
+                  setMessages((prev) => {
+                    const existingIdx = prev.findIndex((m) => m.id === botMessageId);
+                    if (existingIdx !== -1) {
+                      const updated = [...prev];
+                      updated[existingIdx] = {
+                        ...updated[existingIdx],
+                        content: streamAccumulatedText,
+                        searchSources: finalSources,
+                        isWebSearch: responseWebSearch,
+                        isImageGeneration: responseImageGen,
+                      };
+                      return updated;
+                    } else {
+                      return [
+                        ...prev,
+                        {
+                          id: botMessageId,
+                          role: "assistant",
+                          content: streamAccumulatedText,
+                          imageUrl: null,
+                          isWebSearch: responseWebSearch,
+                          isImageGeneration: responseImageGen,
+                          searchSources: finalSources,
+                        },
+                      ];
+                    }
+                  });
+                } else if (sseData.type === "sources") {
+                  finalSources = sseData.sources;
+                  responseWebSearch = true;
+                  setMessages((prev) => {
+                    const existingIdx = prev.findIndex((m) => m.id === botMessageId);
+                    if (existingIdx !== -1) {
+                      const updated = [...prev];
+                      updated[existingIdx] = {
+                        ...updated[existingIdx],
+                        searchSources: finalSources,
+                        isWebSearch: true,
+                      };
+                      return updated;
+                    }
+                    return prev;
+                  });
+                } else if (sseData.type === "done") {
+                  if (sseData.message) streamAccumulatedText = sseData.message;
+                  if (sseData.imageUrl) finalImageUrl = sseData.imageUrl;
+                  if (sseData.suggestions) finalSuggestions = sseData.suggestions;
+                  if (sseData.searchSources) finalSources = sseData.searchSources;
+                  if (sseData.isWebSearch !== undefined) responseWebSearch = sseData.isWebSearch;
+                  if (sseData.isImageGeneration !== undefined) responseImageGen = sseData.isImageGeneration;
+                  if (sseData.limitReached) limitReached = true;
+                } else if (sseData.type === "error") {
+                  throw new Error(sseData.error || "خطأ أثناء معالجة الرد");
+                }
+              } catch (e: any) {
+                if (e.message && e.message !== "Unexpected end of JSON input" && !e.message.includes("JSON")) {
+                  throw e;
+                }
+              }
+            }
+          }
+        } else {
+          // Fallback if not streaming or if error occurred
+          if (!responseStream.ok) {
+            let errorJson: any = {};
+            try {
+              errorJson = await responseStream.json();
+            } catch {}
+            throw new Error(errorJson.error || `خطأ في الخادم (${responseStream.status})`);
+          }
+          const response = await responseStream.json();
+          streamAccumulatedText = response.message;
+          finalImageUrl = response.imageUrl || null;
+          finalSources = response.searchSources;
+          finalSuggestions = response.suggestions;
+          responseWebSearch = response.isWebSearch ?? isSearch;
+          responseImageGen = response.isImageGeneration ?? isImgGen;
+          limitReached = Boolean(response.limitReached);
+        }
 
         if (abortController.signal.aborted) return;
 
         // 5. حفظ رد الـ AI باستخدام functional update لضمان عدم مسح الرسائل السابقة
         const botMessage: ChatMessageItem = {
-          id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+          id: botMessageId,
           role: "assistant",
-          content: response.message,
-          imageUrl: response.imageUrl || null,
-          isWebSearch: response.isWebSearch ?? isSearch,
-          isImageGeneration: response.isImageGeneration ?? isImgGen,
-          searchSources: response.searchSources,
-          suggestions: (response as any).suggestions || undefined,
+          content: streamAccumulatedText,
+          imageUrl: finalImageUrl,
+          isWebSearch: responseWebSearch,
+          isImageGeneration: responseImageGen,
+          searchSources: finalSources,
+          suggestions: finalSuggestions,
         };
 
-        if ((currentImage || response.imageUrl || response.isImageGeneration) && !(response as any).limitReached) {
+        if ((currentImage || finalImageUrl || responseImageGen) && !limitReached) {
           recordImageUsage();
         }
 
         setMessages((prev) => {
-          const combined = [...prev, botMessage];
+          const filtered = prev.filter((m) => m.id !== botMessageId);
+          const combined = [...filtered, botMessage];
           saveStoredChat(currentChatId, combined);
           return combined;
         });
         setIsPendingWebSearch(false);
         setIsGenerating(false);
         abortControllerRef.current = null;
-        speakResponse(response.message);
+        speakResponse(streamAccumulatedText);
 
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListMemoryQueryKey() });
@@ -1677,13 +1802,23 @@ export default function Chat() {
         if (abortController.signal.aborted || err?.name === "AbortError") {
           const currentChatData = getStoredChatById(currentChatId);
           const currentMsgs = currentChatData?.messages || [];
-          const stoppedMessages: ChatMessageItem[] = [
-            ...currentMsgs,
-            {
-              role: "assistant",
-              content: isRtl ? "⏹️ تم إيقاف توليد الرد." : "⏹️ Generation stopped.",
-            },
-          ];
+          const partialMsg = currentMsgs.find((m) => m.id === botMessageId && m.content.length > 0);
+          const stoppedMessages: ChatMessageItem[] = partialMsg
+            ? currentMsgs.map((m) =>
+                m.id === botMessageId
+                  ? {
+                      ...m,
+                      content: `${m.content}\n\n${isRtl ? "⏹️ [تم إيقاف توليد الرد]" : "⏹️ [Generation stopped]"}`,
+                    }
+                  : m
+              )
+            : [
+                ...currentMsgs,
+                {
+                  role: "assistant",
+                  content: isRtl ? "⏹️ تم إيقاف توليد الرد." : "⏹️ Generation stopped.",
+                },
+              ];
           saveStoredChat(currentChatId, stoppedMessages);
           setChats(getStoredChats());
           return;
@@ -1700,7 +1835,7 @@ export default function Chat() {
         const currentChatData = getStoredChatById(currentChatId);
         const currentMsgs = currentChatData?.messages || [];
         const errorMessages: ChatMessageItem[] = [
-          ...currentMsgs,
+          ...currentMsgs.filter((m) => m.id !== botMessageId),
           {
             role: "assistant",
             content: `⚠️ ${errorText}`,
@@ -1722,6 +1857,10 @@ export default function Chat() {
       isRtl,
       speakResponse,
       queryClient,
+      user,
+      plan,
+      recordImageUsage,
+      selectedPersona,
     ]
   );
 
